@@ -43,3 +43,4 @@ Thumbs.db
 # Versioning and setup files
 /setup/*.ini
 /setup/Properties/AssemblyInfo.cs
+shaders/
