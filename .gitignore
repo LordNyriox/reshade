@@ -43,3 +43,25 @@ Thumbs.db
 # Versioning and setup files
 /setup/*.ini
 /setup/Properties/AssemblyInfo.cs
+shaders/AstrayFX/
+shaders/brussell1-Shaders/
+shaders/CobraFX/
+shaders/Constantine-Shaders/
+shaders/CorgiFX/
+shaders/Daodan-shaders/
+shaders/Depth3D/
+shaders/dh-reshade-shaders/
+shaders/fubax-shaders/
+shaders/FXShaders/
+shaders/Glamarye_Fast_Effects_for_ReShade/
+shaders/Insane-Shaders/
+shaders/MLUT/
+shaders/OtisFX/
+shaders/Pirate-Shaders/
+shaders/prod80-ReShade-Repository/
+shaders/qUINT/
+shaders/reshade-shaders/
+shaders/reshade-vrtoolkit/
+shaders/RSRetroArch/
+shaders/SweetFX/
+shaders/Warp-FX/
