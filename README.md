@@ -1,8 +1,12 @@
-ReShade
+Nano's ReShade
 =======
 
-This is a generic post-processing injector for games and video software. It exposes an automated way to access both frame color and depth information and a custom shader language called ReShade FX to write effects like ambient occlusion, depth of field, color correction and more which work everywhere.
+This is Nano's fork of ReShade. Main changes are removal of Network Detection and adding Github Actions.
+Go [HERE](https://github.com/Zayveeo5e/reshade/actions) to download latest build.
 
+Go to the shaders branch for a collection of all the shaders I can find.
+
+=======
 ReShade can optionally load **add-ons**, DLLs that make use of the ReShade API to extend functionality of both ReShade and/or the application ReShade is being applied to. To get started on how to write your own add-on, check out the [API reference](REFERENCE.md).
 
 The ReShade FX shader compiler contained in this repository is standalone, so can be integrated into other projects as well. Simply add all `source/effect_*.*` files to your project and use it similar to the [fxc example](tools/fxc.cpp).
