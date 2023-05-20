@@ -195,8 +195,6 @@ namespace reshade
 #endif
 
 	private:
-		static bool check_for_update(unsigned long latest_version[3]);
-
 		void load_config();
 		void save_config() const;
 
@@ -264,8 +262,6 @@ namespace reshade
 		bool execute_screenshot_post_save_command(const std::filesystem::path &screenshot_path, unsigned int screenshot_count);
 
 		#pragma region Status
-		bool _needs_update = false;
-		unsigned long _latest_version[3] = {};
 		std::filesystem::path _config_path;
 
 		bool _is_initialized = false;

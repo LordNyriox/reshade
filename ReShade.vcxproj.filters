@@ -108,9 +108,6 @@
     <ClCompile Include="source\runtime_gui_vr.cpp">
       <Filter>core\runtime</Filter>
     </ClCompile>
-    <ClCompile Include="source\runtime_update_check.cpp">
-      <Filter>core\runtime</Filter>
-    </ClCompile>
     <ClCompile Include="source\imgui_code_editor.cpp">
       <Filter>core\utils</Filter>
     </ClCompile>
