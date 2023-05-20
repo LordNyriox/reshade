@@ -192,7 +192,7 @@ void reshade::runtime::build_font_atlas()
 		}
 	}
 
-	_show_splash = true;
+	_show_splash = false; // Disabled showing of splash screen at game start. (requires loading of pre-made presets).
 
 	int width, height;
 	unsigned char *pixels;
