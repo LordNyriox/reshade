@@ -1,0 +1,13 @@
+#pragma once
+
+#define VERSION_DATE "2024-01-29"
+#define VERSION_TIME "22:00:00"
+
+#define VERSION_FULL 6.3.3.1
+#define VERSION_MAJOR 6
+#define VERSION_MINOR 3
+#define VERSION_REVISION 3
+#define VERSION_BUILD 1
+
+#define VERSION_STRING_FILE "6.3.3.1"
+#define VERSION_STRING_PRODUCT "6.3.3 Net Unlocked"
