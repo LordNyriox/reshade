@@ -223,7 +223,7 @@ reshade::runtime::runtime(api::swapchain *swapchain, api::command_queue *graphic
 	else
 		log::message(log::level::info, "Running on %s.", device_description);
 
-	check_for_update();
+	//check_for_update();
 
 	// Default shortcut PrtScrn
 	_screenshot_key_data[0] = 0x2C;
@@ -901,7 +901,7 @@ void reshade::runtime::on_present(api::command_queue *present_queue)
 		_preset_save_successful = false;
 
 #if RESHADE_ADDON == 1
-	// Detect high network traffic
+/*	// Detect high network traffic
 	extern volatile long g_network_traffic;
 
 	static int cooldown = 0, traffic = 0;
@@ -915,7 +915,7 @@ void reshade::runtime::on_present(api::command_queue *present_queue)
 		addon_enabled = traffic < 10;
 		traffic = 0;
 		cooldown = 60;
-
+*/
 #if RESHADE_FX
 		if (addon_enabled != was_enabled)
 		{

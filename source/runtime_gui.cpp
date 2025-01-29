@@ -305,8 +305,8 @@ void reshade::runtime::build_font_atlas()
 	}
 
 	ImGui::SetCurrentContext(backup_context);
-
-	_show_splash = true;
+	// Disable splash screen (requires loading pre-made presets)
+	_show_splash = false;
 
 	int width, height;
 	unsigned char *pixels;
@@ -1148,7 +1148,7 @@ void reshade::runtime::draw_gui()
 #endif
 		{
 			ImGui::TextUnformatted("ReShade " VERSION_STRING_PRODUCT);
-
+/*
 			if ((s_latest_version[0] > VERSION_MAJOR) ||
 				(s_latest_version[0] == VERSION_MAJOR && s_latest_version[1] > VERSION_MINOR) ||
 				(s_latest_version[0] == VERSION_MAJOR && s_latest_version[1] == VERSION_MINOR && s_latest_version[2] > VERSION_REVISION))
@@ -1162,7 +1162,7 @@ void reshade::runtime::draw_gui()
 			{
 				ImGui::Text(_("Visit %s for news, updates, effects and discussion."), "https://reshade.me");
 			}
-
+*/
 			ImGui::Spacing();
 
 #if RESHADE_FX
