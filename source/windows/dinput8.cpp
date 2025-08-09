@@ -17,9 +17,10 @@
 		const HRESULT hr = reshade::hooks::call(IDirectInputDevice8##encoding##_GetDeviceState, reshade::hooks::vtable_from_instance(pDevice) + vtable_index)(pDevice, cbData, lpvData); \
 		if (SUCCEEDED(hr)) \
 		{ \
-			DIDEVICEINSTANCE##encoding info = { sizeof(info) }; \
-			pDevice->GetDeviceInfo(&info); \
-			switch (LOBYTE(info.dwDevType)) \
+			DIDEVCAPS caps = { sizeof(caps) }; \
+			pDevice->GetCapabilities(&caps); \
+			\
+			switch (LOBYTE(caps.dwDevType)) \
 			{ \
 			case DI8DEVTYPE_MOUSE: \
 				if (reshade::input::is_blocking_any_mouse_input() && (cbData == sizeof(DIMOUSESTATE) || cbData == sizeof(DIMOUSESTATE2))) \
@@ -38,15 +39,20 @@
 IDirectInputDevice8_GetDeviceState_Impl(9, A)
 IDirectInputDevice8_GetDeviceState_Impl(9, W)
 
+// This may be called a lot (e.g. in Dungeons & Dragons Online), so should have as low overhead as possible
 #define IDirectInputDevice8_GetDeviceData_Impl(vtable_index, encoding) \
 	HRESULT STDMETHODCALLTYPE IDirectInputDevice8##encoding##_GetDeviceData(IDirectInputDevice8##encoding *pDevice, DWORD cbObjectData, LPDIDEVICEOBJECTDATA rgdod, LPDWORD pdwInOut, DWORD dwFlags) \
 	{ \
+		/* Cannot cache the function pointer, as doing so crashes the Steam Overlay */ \
 		HRESULT hr = reshade::hooks::call(IDirectInputDevice8##encoding##_GetDeviceData, reshade::hooks::vtable_from_instance(pDevice) + vtable_index)(pDevice, cbObjectData, rgdod, pdwInOut, dwFlags); \
-		if (SUCCEEDED(hr) && (dwFlags & DIGDD_PEEK) == 0) \
+		if (SUCCEEDED(hr) && \
+			(dwFlags & DIGDD_PEEK) == 0 && \
+			(rgdod != nullptr && *pdwInOut != 0)) \
 		{ \
-			DIDEVICEINSTANCE##encoding info = { sizeof(info) }; \
-			pDevice->GetDeviceInfo(&info); \
-			switch (LOBYTE(info.dwDevType)) \
+			DIDEVCAPS caps = { sizeof(caps) }; \
+			pDevice->GetCapabilities(&caps); \
+			\
+			switch (LOBYTE(caps.dwDevType)) \
 			{ \
 			case DI8DEVTYPE_MOUSE: \
 				if (reshade::input::is_blocking_any_mouse_input()) \
@@ -120,6 +126,5 @@ extern "C" HRESULT WINAPI DirectInput8Create(HINSTANCE hinst, DWORD dwVersion, R
 
 extern "C" LPCDIDATAFORMAT WINAPI GetdfDIJoystick()
 {
-	static const auto trampoline = reshade::hooks::call(GetdfDIJoystick);
-	return trampoline();
+	return reshade::hooks::call(GetdfDIJoystick)();
 }

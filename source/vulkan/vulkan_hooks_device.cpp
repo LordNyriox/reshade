@@ -535,6 +535,9 @@ VkResult VKAPI_CALL vkCreateDevice(VkPhysicalDevice physicalDevice, const VkDevi
 		INIT_DISPATCH_PTR(GetBufferMemoryRequirements2);
 		INIT_DISPATCH_PTR(GetImageMemoryRequirements2);
 		INIT_DISPATCH_PTR(GetDeviceQueue2);
+		INIT_DISPATCH_PTR(CreateDescriptorUpdateTemplate);
+		INIT_DISPATCH_PTR(DestroyDescriptorUpdateTemplate);
+		INIT_DISPATCH_PTR(UpdateDescriptorSetWithTemplate);
 	}
 
 	// Core 1_2
@@ -603,6 +606,12 @@ VkResult VKAPI_CALL vkCreateDevice(VkPhysicalDevice physicalDevice, const VkDevi
 
 	// VK_KHR_push_descriptor
 	INIT_DISPATCH_PTR(CmdPushDescriptorSetKHR);
+	INIT_DISPATCH_PTR(CmdPushDescriptorSetWithTemplateKHR);
+
+	// VK_KHR_descriptor_update_template
+	INIT_DISPATCH_PTR_ALTERNATIVE(CreateDescriptorUpdateTemplate, KHR);
+	INIT_DISPATCH_PTR_ALTERNATIVE(DestroyDescriptorUpdateTemplate, KHR);
+	INIT_DISPATCH_PTR_ALTERNATIVE(UpdateDescriptorSetWithTemplate, KHR);
 
 	// VK_KHR_create_renderpass2 (try the KHR version if the core version does not exist)
 	INIT_DISPATCH_PTR_ALTERNATIVE(CreateRenderPass2, KHR);
@@ -723,8 +732,6 @@ VkResult VKAPI_CALL vkCreateDevice(VkPhysicalDevice physicalDevice, const VkDevi
 		conservative_rasterization_ext,
 		ray_tracing_ext);
 
-	device_impl->_graphics_queue_family_index = graphics_queue_family_index;
-
 	if (!g_vulkan_devices.emplace(dispatch_key_from_handle(device), device_impl))
 	{
 		reshade::log::message(reshade::log::level::warning, "Failed to register Vulkan device %p.", device);
@@ -768,6 +775,12 @@ VkResult VKAPI_CALL vkCreateDevice(VkPhysicalDevice physicalDevice, const VkDevi
 #if RESHADE_ADDON
 			reshade::invoke_addon_event<reshade::addon_event::init_command_queue>(queue_impl);
 #endif
+
+			if (queue_create_info.queueFamilyIndex == graphics_queue_family_index && queue_index == 0)
+			{
+				device_impl->_primary_graphics_queue = queue_impl;
+				device_impl->_primary_graphics_queue_family_index = graphics_queue_family_index;
+			}
 		}
 	}
 
@@ -829,7 +842,7 @@ VkResult VKAPI_CALL vkCreateSwapchainKHR(VkDevice device, const VkSwapchainCreat
 	VkImageFormatListCreateInfoKHR format_list_info;
 
 	// Only have to enable additional features if there is a graphics queue, since ReShade will not run otherwise
-	if (device_impl->_graphics_queue_family_index != std::numeric_limits<uint32_t>::max())
+	if (device_impl->_primary_graphics_queue != nullptr)
 	{
 		// Add required usage flags to create info
 		create_info.imageUsage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
@@ -873,10 +886,10 @@ VkResult VKAPI_CALL vkCreateSwapchainKHR(VkDevice device, const VkSwapchainCreat
 		if (create_info.imageSharingMode == VK_SHARING_MODE_CONCURRENT)
 		{
 			queue_family_list.reserve(create_info.queueFamilyIndexCount + 1);
-			queue_family_list.push_back(device_impl->_graphics_queue_family_index);
+			queue_family_list.push_back(device_impl->_primary_graphics_queue_family_index);
 
 			for (uint32_t i = 0; i < create_info.queueFamilyIndexCount; ++i)
-				if (create_info.pQueueFamilyIndices[i] != device_impl->_graphics_queue_family_index)
+				if (create_info.pQueueFamilyIndices[i] != device_impl->_primary_graphics_queue_family_index)
 					queue_family_list.push_back(create_info.pQueueFamilyIndices[i]);
 
 			create_info.queueFamilyIndexCount = static_cast<uint32_t>(queue_family_list.size());
@@ -1003,7 +1016,7 @@ VkResult VKAPI_CALL vkCreateSwapchainKHR(VkDevice device, const VkSwapchainCreat
 		fullscreen_info.fullScreenExclusive = VK_FULL_SCREEN_EXCLUSIVE_DEFAULT_EXT;
 	}
 
-	if (reshade::invoke_addon_event<reshade::addon_event::create_swapchain>(desc, hwnd))
+	if (reshade::invoke_addon_event<reshade::addon_event::create_swapchain>(reshade::api::device_api::vulkan, desc, hwnd))
 	{
 		create_info.imageFormat = reshade::vulkan::convert_format(desc.back_buffer.texture.format);
 		create_info.imageExtent.width = desc.back_buffer.texture.width;
@@ -1081,27 +1094,17 @@ VkResult VKAPI_CALL vkCreateSwapchainKHR(VkDevice device, const VkSwapchainCreat
 		return result;
 	}
 
-	reshade::vulkan::command_queue_impl *queue_impl = nullptr;
-	if (device_impl->_graphics_queue_family_index != std::numeric_limits<uint32_t>::max())
-	{
-		// Get the main graphics queue for command submission
-		// There has to be at least one queue, or else this effect runtime would not have been created with this queue family index, so it is safe to get the first one here
-		VkQueue graphics_queue = VK_NULL_HANDLE;
-		device_impl->_dispatch_table.GetDeviceQueue(device, device_impl->_graphics_queue_family_index, 0, &graphics_queue);
-
-		queue_impl = device_impl->get_private_data_for_object<VK_OBJECT_TYPE_QUEUE>(graphics_queue);
-	}
-
 	if (nullptr == swapchain_impl)
 	{
 		swapchain_impl = new reshade::vulkan::object_data<VK_OBJECT_TYPE_SWAPCHAIN_KHR>(device_impl, *pSwapchain, create_info, hwnd);
 
-		reshade::create_effect_runtime(swapchain_impl, queue_impl);
+		reshade::create_effect_runtime(swapchain_impl, device_impl->_primary_graphics_queue);
 	}
 	else
 	{
 		swapchain_impl->_orig = *pSwapchain;
 		swapchain_impl->_create_info = create_info;
+		swapchain_impl->_create_info.pNext = nullptr; // Clear out structure chain pointer, since it becomes invalid once leaving the current scope
 		swapchain_impl->_hwnd = hwnd;
 	}
 
@@ -1127,6 +1130,14 @@ VkResult VKAPI_CALL vkCreateSwapchainKHR(VkDevice device, const VkSwapchainCreat
 		image_data.create_info.usage = create_info.imageUsage;
 		image_data.create_info.sharingMode = create_info.imageSharingMode;
 		image_data.create_info.initialLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+
+		// See https://registry.khronos.org/vulkan/specs/latest/man/html/vkCreateSwapchainKHR.html#_description
+		if ((create_info.flags & VK_SWAPCHAIN_CREATE_SPLIT_INSTANCE_BIND_REGIONS_BIT_KHR) != 0)
+			image_data.create_info.flags |= VK_IMAGE_CREATE_SPLIT_INSTANCE_BIND_REGIONS_BIT;
+		if ((create_info.flags & VK_SWAPCHAIN_CREATE_PROTECTED_BIT_KHR) != 0)
+			image_data.create_info.flags |= VK_IMAGE_CREATE_PROTECTED_BIT;
+		if ((create_info.flags & VK_SWAPCHAIN_CREATE_MUTABLE_FORMAT_BIT_KHR) != 0)
+			image_data.create_info.flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT | VK_IMAGE_CREATE_EXTENDED_USAGE_BIT;
 	}
 
 #if RESHADE_ADDON
@@ -1244,25 +1255,30 @@ VkResult VKAPI_CALL vkAcquireNextImage2KHR(VkDevice device, const VkAcquireNextI
 
 VkResult VKAPI_CALL vkQueueSubmit(VkQueue queue, uint32_t submitCount, const VkSubmitInfo *pSubmits, VkFence fence)
 {
-	assert(pSubmits != nullptr);
+	assert(pSubmits != nullptr || submitCount == 0);
 
 	reshade::vulkan::device_impl *const device_impl = g_vulkan_devices.at(dispatch_key_from_handle(queue));
+
 #if RESHADE_ADDON
 	reshade::vulkan::command_queue_impl *const queue_impl = device_impl->get_private_data_for_object<VK_OBJECT_TYPE_QUEUE>(queue);
 
+	const std::unique_lock<std::recursive_mutex> lock(queue_impl->_mutex);
+
 	for (uint32_t i = 0; i < submitCount; ++i)
 	{
-		for (uint32_t k = 0; k < pSubmits[i].commandBufferCount; ++k)
-		{
-			assert(pSubmits[i].pCommandBuffers[k] != VK_NULL_HANDLE);
+		const VkSubmitInfo &submit_info = pSubmits[i];
 
-			reshade::vulkan::command_list_impl *const cmd_impl = device_impl->get_private_data_for_object<VK_OBJECT_TYPE_COMMAND_BUFFER>(pSubmits[i].pCommandBuffers[k]);
+		for (uint32_t k = 0; k < submit_info.commandBufferCount; ++k)
+		{
+			assert(submit_info.pCommandBuffers[k] != VK_NULL_HANDLE);
+
+			reshade::vulkan::command_list_impl *const cmd_impl = device_impl->get_private_data_for_object<VK_OBJECT_TYPE_COMMAND_BUFFER>(submit_info.pCommandBuffers[k]);
 
 			reshade::invoke_addon_event<reshade::addon_event::execute_command_list>(queue_impl, cmd_impl);
 		}
-	}
 
-	queue_impl->flush_immediate_command_list();
+		queue_impl->flush_immediate_command_list(const_cast<VkSubmitInfo &>(submit_info));
+	}
 #endif
 
 	GET_DISPATCH_PTR_FROM(QueueSubmit, device_impl);
@@ -1270,25 +1286,30 @@ VkResult VKAPI_CALL vkQueueSubmit(VkQueue queue, uint32_t submitCount, const VkS
 }
 VkResult VKAPI_CALL vkQueueSubmit2(VkQueue queue, uint32_t submitCount, const VkSubmitInfo2 *pSubmits, VkFence fence)
 {
-	assert(pSubmits != nullptr);
+	assert(pSubmits != nullptr || submitCount == 0);
 
 	reshade::vulkan::device_impl *const device_impl = g_vulkan_devices.at(dispatch_key_from_handle(queue));
+
 #if RESHADE_ADDON
 	reshade::vulkan::command_queue_impl *const queue_impl = device_impl->get_private_data_for_object<VK_OBJECT_TYPE_QUEUE>(queue);
 
+	const std::unique_lock<std::recursive_mutex> lock(queue_impl->_mutex);
+
 	for (uint32_t i = 0; i < submitCount; ++i)
 	{
-		for (uint32_t k = 0; k < pSubmits[i].commandBufferInfoCount; ++k)
-		{
-			assert(pSubmits[i].pCommandBufferInfos[k].commandBuffer != VK_NULL_HANDLE);
+		const VkSubmitInfo2 &submit_info = pSubmits[i];
 
-			reshade::vulkan::command_list_impl *const cmd_impl = device_impl->get_private_data_for_object<VK_OBJECT_TYPE_COMMAND_BUFFER>(pSubmits[i].pCommandBufferInfos[k].commandBuffer);
+		for (uint32_t k = 0; k < submit_info.commandBufferInfoCount; ++k)
+		{
+			assert(submit_info.pCommandBufferInfos[k].commandBuffer != VK_NULL_HANDLE);
+
+			reshade::vulkan::command_list_impl *const cmd_impl = device_impl->get_private_data_for_object<VK_OBJECT_TYPE_COMMAND_BUFFER>(submit_info.pCommandBufferInfos[k].commandBuffer);
 
 			reshade::invoke_addon_event<reshade::addon_event::execute_command_list>(queue_impl, cmd_impl);
 		}
-	}
 
-	queue_impl->flush_immediate_command_list();
+		queue_impl->flush_immediate_command_list();
+	}
 #endif
 
 	GET_DISPATCH_PTR_FROM(QueueSubmit2, device_impl);
@@ -1303,6 +1324,12 @@ VkResult VKAPI_CALL vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPr
 
 	reshade::vulkan::device_impl *const device_impl = g_vulkan_devices.at(dispatch_key_from_handle(queue));
 	reshade::vulkan::command_queue_impl *const queue_impl = device_impl->get_private_data_for_object<VK_OBJECT_TYPE_QUEUE>(queue);
+
+	const bool present_from_secondary_queue = device_impl->_primary_graphics_queue != nullptr && device_impl->_primary_graphics_queue != queue_impl;
+	if (present_from_secondary_queue)
+		std::lock(queue_impl->_mutex, device_impl->_primary_graphics_queue->_mutex);
+	else
+		queue_impl->_mutex.lock();
 
 	for (uint32_t i = 0; i < pPresentInfo->swapchainCount; ++i)
 	{
@@ -1362,7 +1389,7 @@ VkResult VKAPI_CALL vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPr
 			dirty_rect_count != 0 ? dirty_rects.p : nullptr);
 #endif
 
-		reshade::present_effect_runtime(swapchain_impl, queue_impl);
+		reshade::present_effect_runtime(swapchain_impl);
 	}
 
 	// Synchronize immediate command list flush
@@ -1374,6 +1401,19 @@ VkResult VKAPI_CALL vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPr
 		submit_info.waitSemaphoreCount = present_info.waitSemaphoreCount;
 		submit_info.pWaitSemaphores = present_info.pWaitSemaphores;
 		submit_info.pWaitDstStageMask = wait_stages.p;
+
+		// If the application is presenting with a different queue than rendering, synchronize these two queues first
+		if (present_from_secondary_queue)
+		{
+			// Signal the semaphores on the present queue again first, for compatibility with frame generation techniques that don't update them for generated frames
+			submit_info.signalSemaphoreCount = present_info.waitSemaphoreCount;
+			submit_info.pSignalSemaphores = present_info.pWaitSemaphores;
+			device_impl->_dispatch_table.QueueSubmit(queue, 1, &submit_info, VK_NULL_HANDLE);
+			submit_info.signalSemaphoreCount = 0;
+			submit_info.pSignalSemaphores = nullptr;
+
+			device_impl->_primary_graphics_queue->flush_immediate_command_list(submit_info);
+		}
 
 		queue_impl->flush_immediate_command_list(submit_info);
 
@@ -1389,6 +1429,11 @@ VkResult VKAPI_CALL vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPr
 	g_in_dxgi_runtime = true;
 	const VkResult result = trampoline(queue, &present_info);
 	g_in_dxgi_runtime = false;
+
+	if (present_from_secondary_queue)
+		device_impl->_primary_graphics_queue->_mutex.unlock();
+	queue_impl->_mutex.unlock();
+
 	return result;
 }
 
@@ -2844,12 +2889,12 @@ void     VKAPI_CALL vkUpdateDescriptorSets(VkDevice device, uint32_t descriptorW
 				{
 					assert(update.count == write_acceleration_structure->accelerationStructureCount);
 					update.descriptors = write_acceleration_structure->pAccelerationStructures;
+					break;
 				}
-				else
-				{
-					update.count = 0;
-					update.descriptors = nullptr;
-				}
+				[[fallthrough]];
+			default:
+				update.count = 0;
+				update.descriptors = nullptr;
 				break;
 			}
 		}
@@ -2882,6 +2927,117 @@ void     VKAPI_CALL vkUpdateDescriptorSets(VkDevice device, uint32_t descriptorW
 #endif
 
 	trampoline(device, descriptorWriteCount, pDescriptorWrites, descriptorCopyCount, pDescriptorCopies);
+}
+
+VkResult VKAPI_CALL vkCreateDescriptorUpdateTemplate(VkDevice device, const VkDescriptorUpdateTemplateCreateInfo *pCreateInfo, const VkAllocationCallbacks *pAllocator, VkDescriptorUpdateTemplate *pDescriptorUpdateTemplate)
+{
+	reshade::vulkan::device_impl *const device_impl = g_vulkan_devices.at(dispatch_key_from_handle(device));
+	GET_DISPATCH_PTR_FROM(CreateDescriptorUpdateTemplate, device_impl);
+
+	const VkResult result = trampoline(device, pCreateInfo, pAllocator, pDescriptorUpdateTemplate);
+	if (result < VK_SUCCESS)
+	{
+#if RESHADE_VERBOSE_LOG
+		reshade::log::message(reshade::log::level::warning, "vkCreateDescriptorUpdateTemplate failed with error code %d.", static_cast<int>(result));
+#endif
+		return result;
+	}
+
+#if RESHADE_ADDON >= 2
+	reshade::vulkan::object_data<VK_OBJECT_TYPE_DESCRIPTOR_UPDATE_TEMPLATE> &data = *device_impl->register_object<VK_OBJECT_TYPE_DESCRIPTOR_UPDATE_TEMPLATE>(*pDescriptorUpdateTemplate);
+	data.bind_point = pCreateInfo->pipelineBindPoint;
+	data.entries.assign(pCreateInfo->pDescriptorUpdateEntries, pCreateInfo->pDescriptorUpdateEntries + pCreateInfo->descriptorUpdateEntryCount);
+#endif
+
+	return result;
+}
+void     VKAPI_CALL vkDestroyDescriptorUpdateTemplate(VkDevice device, VkDescriptorUpdateTemplate descriptorUpdateTemplate, const VkAllocationCallbacks *pAllocator)
+{
+	if (descriptorUpdateTemplate == VK_NULL_HANDLE)
+		return;
+
+	reshade::vulkan::device_impl *const device_impl = g_vulkan_devices.at(dispatch_key_from_handle(device));
+	GET_DISPATCH_PTR_FROM(DestroyDescriptorUpdateTemplate, device_impl);
+
+#if RESHADE_ADDON >= 2
+	device_impl->unregister_object<VK_OBJECT_TYPE_DESCRIPTOR_UPDATE_TEMPLATE>(descriptorUpdateTemplate);
+#endif
+
+	trampoline(device, descriptorUpdateTemplate, pAllocator);
+}
+
+void     VKAPI_CALL vkUpdateDescriptorSetWithTemplate(VkDevice device, VkDescriptorSet descriptorSet, VkDescriptorUpdateTemplate descriptorUpdateTemplate, const void *pData)
+{
+	reshade::vulkan::device_impl *const device_impl = g_vulkan_devices.at(dispatch_key_from_handle(device));
+	GET_DISPATCH_PTR_FROM(UpdateDescriptorSetWithTemplate, device_impl);
+
+#if RESHADE_ADDON >= 2
+	if (reshade::has_addon_event<reshade::addon_event::update_descriptor_tables>())
+	{
+		const auto template_data = device_impl->get_private_data_for_object<VK_OBJECT_TYPE_DESCRIPTOR_UPDATE_TEMPLATE>(descriptorUpdateTemplate);
+
+		temp_mem<reshade::api::descriptor_table_update> updates(template_data->entries.size());
+
+		uint32_t max_descriptors = 0;
+		for (const VkDescriptorUpdateTemplateEntry &entry : template_data->entries)
+			max_descriptors += entry.descriptorCount;
+		temp_mem<uint64_t> descriptors(max_descriptors * 2);
+
+		for (uint32_t i = 0, j = 0; i < static_cast<uint32_t>(template_data->entries.size()); ++i)
+		{
+			const VkDescriptorUpdateTemplateEntry &entry = template_data->entries[i];
+
+			reshade::api::descriptor_table_update &update = updates[i];
+			update.table = { (uint64_t)descriptorSet };
+			update.binding = entry.dstBinding;
+			update.array_offset = entry.dstArrayElement;
+			update.count = entry.descriptorCount;
+			update.type = reshade::vulkan::convert_descriptor_type(entry.descriptorType);
+			update.descriptors = descriptors.p + j;
+
+			const void *const base = static_cast<const uint8_t *>(pData) + entry.offset;
+
+			switch (entry.descriptorType)
+			{
+			case VK_DESCRIPTOR_TYPE_SAMPLER:
+				for (uint32_t k = 0; k < entry.descriptorCount; ++k, ++j)
+					descriptors[j] = (uint64_t)static_cast<const VkDescriptorImageInfo *>(base)[k].sampler;
+				break;
+			case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
+				for (uint32_t k = 0; k < entry.descriptorCount; ++k, j += 2)
+					descriptors[j + 0] = (uint64_t)static_cast<const VkDescriptorImageInfo *>(base)[k].sampler,
+					descriptors[j + 1] = (uint64_t)static_cast<const VkDescriptorImageInfo *>(base)[k].imageView;
+				break;
+			case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
+			case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
+				for (uint32_t k = 0; k < entry.descriptorCount; ++k, ++j)
+					descriptors[j] = (uint64_t)static_cast<const VkDescriptorImageInfo *>(base)[k].imageView;
+				break;
+			case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
+			case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
+				for (uint32_t k = 0; k < entry.descriptorCount; ++k, ++j)
+					descriptors[j] = (uint64_t)static_cast<const VkBufferView *>(base)[k];
+				break;
+			case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
+			case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
+				update.descriptors = static_cast<const VkDescriptorBufferInfo *>(base);
+				break;
+			case VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR:
+				update.descriptors = static_cast<const VkAccelerationStructureKHR *>(base);
+				break;
+			default:
+				update.count = 0;
+				update.descriptors = nullptr;
+				break;
+			}
+		}
+
+		if (reshade::invoke_addon_event<reshade::addon_event::update_descriptor_tables>(device_impl, static_cast<uint32_t>(template_data->entries.size()), updates.p))
+			return;
+	}
+#endif
+
+	trampoline(device, descriptorSet, descriptorUpdateTemplate, pData);
 }
 
 VkResult VKAPI_CALL vkCreateFramebuffer(VkDevice device, const VkFramebufferCreateInfo *pCreateInfo, const VkAllocationCallbacks *pAllocator, VkFramebuffer *pFramebuffer)

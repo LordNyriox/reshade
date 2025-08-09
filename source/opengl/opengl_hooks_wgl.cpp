@@ -215,6 +215,7 @@ public:
 class wgl_swapchain : public reshade::opengl::swapchain_impl
 {
 public:
+	static constexpr reshade::api::resource default_rt = reshade::opengl::make_resource_handle(GL_FRAMEBUFFER_DEFAULT, GL_BACK);
 	static constexpr reshade::api::resource_view default_rtv = reshade::opengl::make_resource_view_handle(GL_FRAMEBUFFER_DEFAULT, GL_BACK);
 	static constexpr reshade::api::resource default_ds = reshade::opengl::make_resource_handle(GL_FRAMEBUFFER_DEFAULT, GL_DEPTH_STENCIL_ATTACHMENT);
 	static constexpr reshade::api::resource_view default_dsv = reshade::opengl::make_resource_view_handle(GL_FRAMEBUFFER_DEFAULT, GL_DEPTH_STENCIL_ATTACHMENT);
@@ -252,6 +253,16 @@ public:
 
 		reshade::invoke_addon_event<reshade::addon_event::init_swapchain>(this, resize);
 
+		// Communicate implicit back buffer render target view and depth-stencil view to add-ons
+		assert(default_rt == get_back_buffer());
+
+		reshade::invoke_addon_event<reshade::addon_event::init_resource_view>(
+			device,
+			default_rt,
+			reshade::api::resource_usage::render_target,
+			reshade::api::resource_view_desc(device->_default_fbo_desc.texture.samples > 1 ? reshade::api::resource_view_type::texture_2d_multisample : reshade::api::resource_view_type::texture_2d, device->_default_fbo_desc.texture.format, 0, 1, 0, 1),
+			default_rtv);
+
 		if (device->_default_depth_format != reshade::api::format::unknown)
 		{
 			reshade::invoke_addon_event<reshade::addon_event::init_resource>(
@@ -264,7 +275,7 @@ public:
 				device,
 				default_ds,
 				reshade::api::resource_usage::depth_stencil,
-				reshade::api::resource_view_desc(device->_default_depth_format),
+				reshade::api::resource_view_desc(device->_default_fbo_desc.texture.samples > 1 ? reshade::api::resource_view_type::texture_2d_multisample : reshade::api::resource_view_type::texture_2d, device->_default_depth_format, 0, 1, 0, 1),
 				default_dsv);
 		}
 
@@ -293,6 +304,8 @@ public:
 			reshade::invoke_addon_event<reshade::addon_event::destroy_resource_view>(device, default_dsv);
 			reshade::invoke_addon_event<reshade::addon_event::destroy_resource>(device, default_ds);
 		}
+
+		reshade::invoke_addon_event<reshade::addon_event::destroy_resource_view>(device, default_rtv);
 
 		reshade::invoke_addon_event<reshade::addon_event::destroy_swapchain>(this, resize);
 #else
@@ -337,7 +350,7 @@ public:
 #endif
 
 		// Assume that the correct OpenGL context is still current here
-		reshade::present_effect_runtime(this, context);
+		reshade::present_effect_runtime(this);
 
 #ifndef NDEBUG
 		GLenum type = GL_NONE; char message[512] = "";
@@ -608,7 +621,7 @@ extern "C" BOOL  WINAPI wglSetPixelFormat(HDC hdc, int iPixelFormat, const PIXEL
 		desc.sync_interval = wglGetSwapIntervalEXT();
 	}
 
-	if (reshade::invoke_addon_event<reshade::addon_event::create_swapchain>(desc, hwnd))
+	if (reshade::invoke_addon_event<reshade::addon_event::create_swapchain>(reshade::api::device_api::opengl, desc, hwnd))
 	{
 		reshade::opengl::convert_pixel_format(desc.back_buffer.texture.format, pfd);
 
@@ -767,6 +780,7 @@ extern "C" HGLRC WINAPI wglCreateContext(HDC hdc)
 
 	// Keep track of legacy contexts here instead of in 'wglCreateLayerContext' because some drivers call the latter from within their 'wglCreateContextAttribsARB' implementation
 	{ const std::unique_lock<std::shared_mutex> lock(s_global_mutex);
+
 		s_legacy_contexts.emplace(hglrc);
 	}
 
@@ -808,6 +822,19 @@ extern "C" HGLRC WINAPI wglCreateContext(HDC hdc)
 		}
 	}
 
+#if RESHADE_ADDON >= 2
+	reshade::load_addons();
+
+	uint32_t api_version = (major << 12) | (minor << 8);
+	if (reshade::invoke_addon_event<reshade::addon_event::create_device>(reshade::api::device_api::opengl, api_version))
+	{
+		major = (api_version >> 12) & 0xF;
+		minor = (api_version >>  8) & 0xF;
+	}
+
+	reshade::unload_addons();
+#endif
+
 	if (major < 3 || (major == 3 && minor < 2))
 		compatibility = true;
 
@@ -821,7 +848,7 @@ extern "C" HGLRC WINAPI wglCreateContext(HDC hdc)
 	attribs[i].name = wgl_attribute::WGL_CONTEXT_PROFILE_MASK_ARB;
 	attribs[i++].value = compatibility ? wgl_attribute::WGL_CONTEXT_COMPATIBILITY_PROFILE_BIT_ARB : wgl_attribute::WGL_CONTEXT_CORE_PROFILE_BIT_ARB;
 
-	reshade::log::message(reshade::log::level::info, "> Requesting %s OpenGL context for version %d.%d.", compatibility ? "compatibility" : "core", major, minor);
+	reshade::log::message(reshade::log::level::info, "Requesting %s OpenGL context for version %d.%d.", compatibility ? "compatibility" : "core", major, minor);
 
 	if (major < 4 || (major == 4 && minor < 3))
 	{
@@ -852,7 +879,11 @@ extern "C" HGLRC WINAPI wglCreateContext(HDC hdc)
 	}
 
 	{ const std::unique_lock<std::shared_mutex> lock(s_global_mutex);
-		s_shared_contexts.emplace(hglrc, hShareContext);
+
+		if (compatibility)
+			s_legacy_contexts.emplace(hglrc);
+
+		s_shared_contexts[hglrc] = hShareContext;
 
 		if (hShareContext != nullptr)
 		{
@@ -890,7 +921,8 @@ extern "C" HGLRC WINAPI wglCreateLayerContext(HDC hdc, int iLayerPlane)
 	}
 
 	{ const std::unique_lock<std::shared_mutex> lock(s_global_mutex);
-		s_shared_contexts.emplace(hglrc, nullptr);
+
+		s_shared_contexts[hglrc] = nullptr;
 	}
 
 	return hglrc;
@@ -1028,6 +1060,7 @@ extern "C" BOOL  WINAPI wglShareLists(HGLRC hglrc1, HGLRC hglrc2)
 	}
 
 	{ const std::unique_lock<std::shared_mutex> lock(s_global_mutex);
+
 		s_shared_contexts[hglrc2] = hglrc1;
 	}
 
@@ -1314,6 +1347,7 @@ extern "C" HGLRC WINAPI wglGetCurrentContext()
 	}
 
 	{ const std::unique_lock<std::shared_mutex> lock(s_global_mutex);
+
 		s_pbuffer_device_contexts.insert(hdc);
 	}
 
@@ -1333,6 +1367,7 @@ extern "C" HGLRC WINAPI wglGetCurrentContext()
 	}
 
 	{ const std::unique_lock<std::shared_mutex> lock(s_global_mutex);
+
 		s_pbuffer_device_contexts.erase(hdc);
 	}
 

@@ -56,7 +56,7 @@ std::shared_ptr<reshade::input> reshade::input::register_window(window_handle wi
 	GetWindowThreadProcessId(static_cast<HWND>(window), &process_id);
 	if (process_id != GetCurrentProcessId())
 	{
-		reshade::log::message(reshade::log::level::warning, "Cannot capture input for window %p created by a different process.", window);
+		reshade::log::message(reshade::log::level::warning, "Cannot capture input for window %p created by a different process (%lu).", window, process_id);
 		return nullptr;
 	}
 
@@ -499,7 +499,7 @@ void reshade::input::block_mouse_cursor_warping(bool enable)
 	{
 		ClipCursor_trampoline(nullptr);
 	}
-	else if ((s_last_clip_cursor.right - s_last_clip_cursor.left) != 0 && (s_last_clip_cursor.bottom - s_last_clip_cursor.top) != 0)
+	else if (_block_cursor_warping && (s_last_clip_cursor.right - s_last_clip_cursor.left) != 0 && (s_last_clip_cursor.bottom - s_last_clip_cursor.top) != 0)
 	{
 		// Restore previous clipping rectangle when not blocking mouse input
 		ClipCursor_trampoline(&s_last_clip_cursor);
@@ -572,8 +572,10 @@ extern "C" BOOL WINAPI HookGetMessageA(LPMSG lpMsg, HWND hWnd, UINT wMsgFilterMi
 
 		if (MsgWaitForMultipleObjects(1, &g_exit_event, FALSE, INFINITE, mask) != (WAIT_OBJECT_0 + 1))
 		{
-			std::memset(lpMsg, 0, sizeof(MSG)); // Clear message structure, so application does not process it
-			return -1;
+			// Clear message structure, so application does not process it
+			std::memset(lpMsg, 0, sizeof(MSG));
+			// Do not return an error (-1), since this causes WPF to throw an exception
+			return 1;
 		}
 	}
 #else
@@ -627,7 +629,7 @@ extern "C" BOOL WINAPI HookGetMessageW(LPMSG lpMsg, HWND hWnd, UINT wMsgFilterMi
 		if (MsgWaitForMultipleObjects(1, &g_exit_event, FALSE, INFINITE, mask) != (WAIT_OBJECT_0 + 1))
 		{
 			std::memset(lpMsg, 0, sizeof(MSG));
-			return -1;
+			return 1;
 		}
 	}
 #else

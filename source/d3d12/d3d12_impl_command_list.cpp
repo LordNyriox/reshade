@@ -440,7 +440,8 @@ void reshade::d3d12::command_list_impl::push_descriptors(api::shader_stage stage
 			_device_impl->_orig->CreateConstantBufferView(&view_desc, base_handle);
 		}
 	}
-	else if (update.type == api::descriptor_type::sampler ||
+	else if (
+		update.type == api::descriptor_type::sampler ||
 		update.type == api::descriptor_type::buffer_shader_resource_view ||
 		update.type == api::descriptor_type::buffer_unordered_access_view ||
 		update.type == api::descriptor_type::texture_shader_resource_view ||
@@ -768,7 +769,7 @@ void reshade::d3d12::command_list_impl::copy_texture_region(api::resource src, u
 
 	assert(src != 0 && dst != 0);
 	// Blit between different region dimensions is not supported
-	assert((src_box == nullptr && dst_box == nullptr) || (src_box != nullptr && dst_box != nullptr && dst_box->width() == src_box->width() && dst_box->height() == src_box->height() && dst_box->depth() == src_box->depth()));
+	assert(dst_box == nullptr || (src_box != nullptr && dst_box != nullptr && dst_box->width() == src_box->width() && dst_box->height() == src_box->height() && dst_box->depth() == src_box->depth()));
 
 	D3D12_RESOURCE_DESC src_desc = reinterpret_cast<ID3D12Resource *>(src.handle)->GetDesc();
 	D3D12_RESOURCE_DESC dst_desc = reinterpret_cast<ID3D12Resource *>(dst.handle)->GetDesc();

@@ -117,7 +117,7 @@ void dump_and_modify_present_parameters(D3DPRESENT_PARAMETERS &pp, [[maybe_unuse
 		desc.sync_interval = UINT32_MAX;
 	}
 
-	if (reshade::invoke_addon_event<reshade::addon_event::create_swapchain>(desc, window))
+	if (reshade::invoke_addon_event<reshade::addon_event::create_swapchain>(reshade::api::device_api::d3d9, desc, window))
 	{
 		pp.BackBufferWidth = desc.back_buffer.texture.width;
 		pp.BackBufferHeight = desc.back_buffer.texture.height;
@@ -194,7 +194,7 @@ void dump_and_modify_present_parameters(D3DPRESENT_PARAMETERS &pp, [[maybe_unuse
 	}
 #endif
 }
-void dump_and_modify_present_parameters(D3DPRESENT_PARAMETERS &pp, D3DDISPLAYMODEEX &fullscreen_desc, IDirect3D9 *d3d, UINT adapter_index, [[maybe_unused]] HWND focus_window)
+void dump_and_modify_present_parameters(D3DPRESENT_PARAMETERS &pp, D3DDISPLAYMODEEX &fullscreen_desc, IDirect3D9 *d3d, UINT adapter_index, HWND focus_window)
 {
 	dump_and_modify_present_parameters(pp, d3d, adapter_index, focus_window);
 
@@ -213,7 +213,7 @@ void dump_and_modify_present_parameters(D3DPRESENT_PARAMETERS &pp, D3DDISPLAYMOD
 extern void init_device_proxy_for_d3d9on12(Direct3DDevice9 *device_proxy);
 
 template <typename T>
-static void init_device_proxy(T *&device, D3DDEVTYPE device_type, bool use_software_rendering)
+static void init_device_proxy(T *&device, D3DDEVTYPE device_type, HWND device_window, bool use_software_rendering)
 {
 	// Enable software vertex processing if the application requested a software device
 	if (use_software_rendering)
@@ -222,6 +222,13 @@ static void init_device_proxy(T *&device, D3DDEVTYPE device_type, bool use_softw
 	if (device_type == D3DDEVTYPE_NULLREF)
 	{
 		reshade::log::message(reshade::log::level::warning, "Skipping device because the device type is 'D3DDEVTYPE_NULLREF'.");
+		return;
+	}
+
+	// Some video applications create a non-displaying device targeting the desktop window
+	if (GetDesktopWindow() == device_window)
+	{
+		reshade::log::message(reshade::log::level::warning, "Skipping device because the focus window is the desktop window.");
 		return;
 	}
 
@@ -260,7 +267,7 @@ extern thread_local bool g_in_dxgi_runtime;
 
 HRESULT STDMETHODCALLTYPE IDirect3D9_CreateDevice(IDirect3D9 *pD3D, UINT Adapter, D3DDEVTYPE DeviceType, HWND hFocusWindow, DWORD BehaviorFlags, D3DPRESENT_PARAMETERS *pPresentationParameters, IDirect3DDevice9 **ppReturnedDeviceInterface)
 {
-	const auto trampoline = reshade::hooks::call(IDirect3D9_CreateDevice, reshade::hooks::vtable_from_instance(pD3D) + 16);
+	auto trampoline = reshade::hooks::call(IDirect3D9_CreateDevice, reshade::hooks::vtable_from_instance(pD3D) + 16);
 
 	// Pass on unmodified in case this called from within the runtime, to avoid hooking internal devices
 	if (g_in_d3d9_runtime)
@@ -281,8 +288,23 @@ HRESULT STDMETHODCALLTYPE IDirect3D9_CreateDevice(IDirect3D9 *pD3D, UINT Adapter
 	}
 
 #if RESHADE_ADDON
-	// Load add-ons before 'create_swapchain' event in 'dump_and_modify_present_parameters'
+	// Load add-ons before 'create_device' event and 'create_swapchain' event in 'dump_and_modify_present_parameters'
 	reshade::load_addons();
+#endif
+#if RESHADE_ADDON >= 2
+	uint32_t api_version = 0x9000;
+	if (reshade::invoke_addon_event<reshade::addon_event::create_device>(reshade::api::device_api::d3d9, api_version) && api_version > 0x9000)
+	{
+		// Upgrade Direct3D 9 to Direct3D 9Ex
+		trampoline =
+			[](IDirect3D9 *, UINT Adapter, D3DDEVTYPE DeviceType, HWND hFocusWindow, DWORD BehaviorFlags, D3DPRESENT_PARAMETERS *pPresentationParameters, IDirect3DDevice9 **ppReturnedDeviceInterface) -> HRESULT {
+				assert(g_in_d3d9_runtime);
+				com_ptr<IDirect3D9Ex> d3dex;
+				if (FAILED(Direct3DCreate9Ex(D3D_SDK_VERSION, &d3dex)))
+					return D3DERR_NOTAVAILABLE;
+				return d3dex->CreateDeviceEx(Adapter, DeviceType, hFocusWindow, BehaviorFlags, pPresentationParameters, nullptr, reinterpret_cast<IDirect3DDevice9Ex **>(ppReturnedDeviceInterface));
+			};
+	}
 #endif
 
 	D3DPRESENT_PARAMETERS pp = *pPresentationParameters;
@@ -309,7 +331,7 @@ HRESULT STDMETHODCALLTYPE IDirect3D9_CreateDevice(IDirect3D9 *pD3D, UINT Adapter
 
 	if (SUCCEEDED(hr))
 	{
-		init_device_proxy(*ppReturnedDeviceInterface, DeviceType, use_software_rendering);
+		init_device_proxy(*ppReturnedDeviceInterface, DeviceType, (pp.hDeviceWindow != nullptr) ? pp.hDeviceWindow : hFocusWindow, use_software_rendering);
 	}
 	else
 	{
@@ -317,7 +339,7 @@ HRESULT STDMETHODCALLTYPE IDirect3D9_CreateDevice(IDirect3D9 *pD3D, UINT Adapter
 	}
 
 #if RESHADE_ADDON
-	// Device proxy was created at this point, which increased the add-on manager reference count, so can release the one from above again
+	// Device proxy was created at this point, which increased the add-on manager reference count, so can release the reference added above again
 	reshade::unload_addons();
 #endif
 
@@ -346,8 +368,15 @@ HRESULT STDMETHODCALLTYPE IDirect3D9Ex_CreateDeviceEx(IDirect3D9Ex *pD3D, UINT A
 	}
 
 #if RESHADE_ADDON
-	// Load add-ons before 'create_swapchain' event in 'dump_and_modify_present_parameters'
+	// Load add-ons before 'create_device' event and 'create_swapchain' event in 'dump_and_modify_present_parameters'
 	reshade::load_addons();
+#endif
+#if RESHADE_ADDON >= 2
+	uint32_t api_version = 0x9100;
+	if (reshade::invoke_addon_event<reshade::addon_event::create_device>(reshade::api::device_api::d3d9, api_version))
+	{
+		assert(api_version > 0x9000);
+	}
 #endif
 
 	D3DDISPLAYMODEEX fullscreen_mode = { sizeof(fullscreen_mode) };
@@ -377,7 +406,7 @@ HRESULT STDMETHODCALLTYPE IDirect3D9Ex_CreateDeviceEx(IDirect3D9Ex *pD3D, UINT A
 
 	if (SUCCEEDED(hr))
 	{
-		init_device_proxy(*ppReturnedDeviceInterface, DeviceType, use_software_rendering);
+		init_device_proxy(*ppReturnedDeviceInterface, DeviceType, (pp.hDeviceWindow != nullptr) ? pp.hDeviceWindow : hFocusWindow, use_software_rendering);
 	}
 	else
 	{
@@ -385,7 +414,7 @@ HRESULT STDMETHODCALLTYPE IDirect3D9Ex_CreateDeviceEx(IDirect3D9Ex *pD3D, UINT A
 	}
 
 #if RESHADE_ADDON
-	// Device proxy was created at this point, which increased the add-on manager reference count, so can release the one from above again
+	// Device proxy was created at this point, which increased the add-on manager reference count, so can release the reference added above again
 	reshade::unload_addons();
 #endif
 
@@ -440,7 +469,7 @@ extern "C"     HRESULT WINAPI Direct3DCreate9Ex(UINT SDKVersion, IDirect3D9Ex **
 
 	assert(ppD3D != nullptr);
 
-	reshade::hooks::install("IDirect3D9::CreateDevice", reshade::hooks::vtable_from_instance(*ppD3D), 16, reinterpret_cast<reshade::hook::address>(&IDirect3D9_CreateDevice));
+	reshade::hooks::install("IDirect3D9Ex::CreateDevice", reshade::hooks::vtable_from_instance(*ppD3D), 16, reinterpret_cast<reshade::hook::address>(&IDirect3D9_CreateDevice));
 	reshade::hooks::install("IDirect3D9Ex::CreateDeviceEx", reshade::hooks::vtable_from_instance(*ppD3D), 20, reinterpret_cast<reshade::hook::address>(&IDirect3D9Ex_CreateDeviceEx));
 
 #if RESHADE_VERBOSE_LOG

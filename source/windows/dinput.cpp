@@ -18,10 +18,11 @@
 		\
 		if (dwFlags & DISCL_EXCLUSIVE) \
 		{ \
-			DIDEVICEINSTANCE##encoding info = { sizeof(info) }; \
-			pDevice->GetDeviceInfo(&info); \
-			if (LOBYTE(info.dwDevType) == DIDEVTYPE_MOUSE || \
-				LOBYTE(info.dwDevType) == DIDEVTYPE_KEYBOARD) \
+			DIDEVCAPS caps = { sizeof(caps) }; \
+			pDevice->GetCapabilities(&caps); \
+			\
+			if (LOBYTE(caps.dwDevType) == DIDEVTYPE_MOUSE || \
+				LOBYTE(caps.dwDevType) == DIDEVTYPE_KEYBOARD) \
 			{ \
 				/* Need to remove exclusive flag, otherwise DirectInput will block input window messages and input.cpp will not receive input anymore */ \
 				dwFlags = (dwFlags & ~DISCL_EXCLUSIVE) | DISCL_NONEXCLUSIVE; \
@@ -47,9 +48,10 @@ IDirectInputDevice_SetCooperativeLevel_Impl(13, 7, W)
 		const HRESULT hr = reshade::hooks::call(IDirectInputDevice##device_interface_version##encoding##_GetDeviceState, reshade::hooks::vtable_from_instance(pDevice) + vtable_index)(pDevice, cbData, lpvData); \
 		if (SUCCEEDED(hr)) \
 		{ \
-			DIDEVICEINSTANCE##encoding info = { sizeof(info) }; \
-			pDevice->GetDeviceInfo(&info); \
-			switch (LOBYTE(info.dwDevType)) \
+			DIDEVCAPS caps = { sizeof(caps) }; \
+			pDevice->GetCapabilities(&caps); \
+			\
+			switch (LOBYTE(caps.dwDevType)) \
 			{ \
 			case DIDEVTYPE_MOUSE: \
 				if (reshade::input::is_blocking_any_mouse_input()) \
@@ -75,11 +77,14 @@ IDirectInputDevice_GetDeviceState_Impl(9, 7, W)
 	HRESULT STDMETHODCALLTYPE IDirectInputDevice##device_interface_version##encoding##_GetDeviceData(IDirectInputDevice##device_interface_version##encoding *pDevice, DWORD cbObjectData, LPDIDEVICEOBJECTDATA rgdod, LPDWORD pdwInOut, DWORD dwFlags) \
 	{ \
 		HRESULT hr = reshade::hooks::call(IDirectInputDevice##device_interface_version##encoding##_GetDeviceData, reshade::hooks::vtable_from_instance(pDevice) + vtable_index)(pDevice, cbObjectData, rgdod, pdwInOut, dwFlags); \
-		if (SUCCEEDED(hr) && (dwFlags & DIGDD_PEEK) == 0) \
+		if (SUCCEEDED(hr) && \
+			(dwFlags & DIGDD_PEEK) == 0 && \
+			(rgdod != nullptr && *pdwInOut != 0)) \
 		{ \
-			DIDEVICEINSTANCE##encoding info = { sizeof(info) }; \
-			pDevice->GetDeviceInfo(&info); \
-			switch (LOBYTE(info.dwDevType)) \
+			DIDEVCAPS caps = { sizeof(caps) }; \
+			pDevice->GetCapabilities(&caps); \
+			\
+			switch (LOBYTE(caps.dwDevType)) \
 			{ \
 			case DIDEVTYPE_MOUSE: \
 				if (reshade::input::is_blocking_any_mouse_input()) \
