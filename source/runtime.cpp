@@ -59,7 +59,7 @@ bool resolve_preset_path(std::filesystem::path &path, std::error_code &ec)
 		return false;
 	// A non-existent path is valid for a new preset
 	// Otherwise ensure the file has a technique list, which should make it a preset
-	return !resolve_path(path, ec) || ini_file::load_cache(path).has({}, "Techniques");
+	return !resolve_path(path, ec) || reshade::ini_file::load_cache(path).has({}, "Techniques");
 }
 
 static std::filesystem::path make_relative_path(const std::filesystem::path &path)
@@ -647,6 +647,8 @@ void reshade::runtime::on_present()
 
 	if (_should_save_screenshot && _screenshot_save_gui && (_show_overlay || (_preview_texture != 0 && _effects_enabled)))
 		save_screenshot("Overlay");
+
+	_block_input_next_frame = false;
 #endif
 
 	// All screenshots were created at this point, so reset request
@@ -1086,7 +1088,8 @@ void reshade::runtime::load_current_preset()
 					return technique.name == name;
 				}) == _techniques.end())
 		{
-			log::message(log::level::warning, "Preset '%s' uses unknown technique '%*s'.", _current_preset_path.u8string().c_str(), technique_name.size(), technique_name.data());
+			if (_reload_remaining_effects == 0)
+				log::message(log::level::warning, "Preset '%s' uses unknown technique '%*s'.", _current_preset_path.u8string().c_str(), technique_name.size(), technique_name.data());
 			_preset_is_incomplete = true;
 		}
 	}
@@ -3059,7 +3062,10 @@ void reshade::runtime::load_textures(size_t effect_index)
 
 		void *pixels = nullptr;
 		int width = 0, height = 1, depth = 1, channels = 0;
-		const bool is_floating_point_format = (tex.format == reshadefx::texture_format::r32f || tex.format == reshadefx::texture_format::rg32f || tex.format == reshadefx::texture_format::rgba32f);
+		const bool is_floating_point_format =
+			tex.format == reshadefx::texture_format::r32f ||
+			tex.format == reshadefx::texture_format::rg32f ||
+			tex.format == reshadefx::texture_format::rgba32f;
 
 		if (FILE *const file = _wfsopen(source_path.c_str(), L"rb", SH_DENYNO))
 		{
@@ -3442,14 +3448,8 @@ void reshade::runtime::enable_technique(technique &tech)
 		return; // Cannot enable techniques that failed to compile
 
 #if RESHADE_ADDON
-	if (!is_loading() && !_is_in_api_call)
-	{
-		_is_in_api_call = true;
-		const bool skip = invoke_addon_event<addon_event::reshade_set_technique_state>(this, api::effect_technique { reinterpret_cast<uintptr_t>(&tech) }, true);
-		_is_in_api_call = false;
-		if (skip)
-			return;
-	}
+	if (!is_loading() && invoke_addon_event<addon_event::reshade_set_technique_state>(this, api::effect_technique { reinterpret_cast<uintptr_t>(&tech) }, true))
+		return;
 #endif
 
 	const bool status_changed = !tech.enabled;
@@ -3470,14 +3470,8 @@ void reshade::runtime::disable_technique(technique &tech)
 	assert(tech.effect_index < _effects.size());
 
 #if RESHADE_ADDON
-	if (!is_loading() && !_is_in_api_call)
-	{
-		_is_in_api_call = true;
-		const bool skip = invoke_addon_event<addon_event::reshade_set_technique_state>(this, api::effect_technique { reinterpret_cast<uintptr_t>(&tech) }, false);
-		_is_in_api_call = false;
-		if (skip)
-			return;
-	}
+	if (!is_loading() && invoke_addon_event<addon_event::reshade_set_technique_state>(this, api::effect_technique { reinterpret_cast<uintptr_t>(&tech) }, false))
+		return;
 #endif
 
 	const bool status_changed = tech.enabled;
@@ -3499,7 +3493,7 @@ void reshade::runtime::reorder_techniques(std::vector<size_t> &&technique_indice
 			}));
 
 #if RESHADE_ADDON
-	if (!is_loading() && !_is_in_api_call)
+	if (!is_loading())
 	{
 		std::vector<api::effect_technique> techniques(technique_indices.size());
 		std::transform(technique_indices.cbegin(), technique_indices.cend(), techniques.begin(),
@@ -3507,10 +3501,7 @@ void reshade::runtime::reorder_techniques(std::vector<size_t> &&technique_indice
 				return api::effect_technique { reinterpret_cast<uint64_t>(&_techniques[technique_index]) };
 			});
 
-		_is_in_api_call = true;
-		const bool skip = invoke_addon_event<addon_event::reshade_reorder_techniques>(this, techniques.size(), techniques.data());
-		_is_in_api_call = false;
-		if (skip)
+		if (invoke_addon_event<addon_event::reshade_reorder_techniques>(this, techniques.size(), techniques.data()))
 			return;
 
 		for (size_t i = 0; i < techniques.size(); i++)
@@ -3544,9 +3535,17 @@ void reshade::runtime::load_effects(bool force_load_all)
 	// Ensure HLSL compiler is loaded before trying to compile effects in Direct3D
 	if (_d3d_compiler_module == nullptr && (_renderer_id & 0xF0000) == 0)
 	{
-		extern std::filesystem::path get_system_path();
 		// Prefer loading up-to-date system D3DCompiler DLL over local variants
-		if ((_d3d_compiler_module = LoadLibraryW((get_system_path() / L"d3dcompiler_47.dll").c_str())) == nullptr &&
+		// Do not check system path when running in Wine though, since the D3DCompiler DLL there does not support various features
+		const auto ntdll_module = GetModuleHandleW(L"ntdll.dll");
+		assert(ntdll_module != nullptr);
+		if (GetProcAddress(ntdll_module, "wine_get_version") == nullptr)
+		{
+			extern std::filesystem::path get_system_path();
+			_d3d_compiler_module = LoadLibraryW((get_system_path() / L"d3dcompiler_47.dll").c_str());
+		}
+
+		if ((_d3d_compiler_module == nullptr) &&
 			(_d3d_compiler_module = LoadLibraryW(L"d3dcompiler_47.dll")) == nullptr &&
 			(_d3d_compiler_module = LoadLibraryW(L"d3dcompiler_43.dll")) == nullptr)
 		{
@@ -4483,12 +4482,7 @@ void reshade::runtime::render_technique(technique &tech, api::command_list *cmd_
 #endif
 
 #if RESHADE_ADDON
-	if (_is_in_api_call)
-		return;
-
-	_is_in_api_call = true;
 	invoke_addon_event<addon_event::reshade_render_technique>(const_cast<runtime *>(this), api::effect_technique { reinterpret_cast<uintptr_t>(&tech) }, cmd_list, back_buffer_rtv, back_buffer_rtv_srgb);
-	_is_in_api_call = false;
 #endif
 }
 
@@ -4777,14 +4771,8 @@ template <> void reshade::runtime::get_uniform_value<uint32_t>(const uniform &va
 void reshade::runtime::set_uniform_value_data(uniform &variable, const uint8_t *data, size_t size, size_t base_index)
 {
 #if RESHADE_ADDON
-	if (!is_loading() && !_is_in_api_call)
-	{
-		_is_in_api_call = true;
-		const bool skip = invoke_addon_event<addon_event::reshade_set_uniform_value>(this, api::effect_uniform_variable { reinterpret_cast<uintptr_t>(&variable) }, data, size);
-		_is_in_api_call = false;
-		if (skip)
-			return;
-	}
+	if (!is_loading() && invoke_addon_event<addon_event::reshade_set_uniform_value>(this, api::effect_uniform_variable { reinterpret_cast<uintptr_t>(&variable) }, data, size))
+		return;
 #endif
 
 	size = std::min(size, static_cast<size_t>(variable.size));

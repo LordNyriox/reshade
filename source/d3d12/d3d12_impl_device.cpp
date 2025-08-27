@@ -246,6 +246,8 @@ bool reshade::d3d12::device_impl::check_capability(api::device_caps capability) 
 			SUCCEEDED(_orig->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS5, &options, sizeof(options))))
 			return options.RaytracingTier != D3D12_RAYTRACING_TIER_NOT_SUPPORTED;
 		return false;
+	case api::device_caps::update_buffer_region_command:
+	case api::device_caps::update_texture_region_command:
 	default:
 		return false;
 	}
@@ -1648,20 +1650,29 @@ void reshade::d3d12::device_impl::get_descriptor_heap_offset(api::descriptor_tab
 	const D3D12_GPU_DESCRIPTOR_HANDLE handle_gpu = { table.handle };
 
 #if RESHADE_ADDON >= 2
-	for (D3D12DescriptorHeap *const heap_impl : _descriptor_heaps)
+	const std::shared_lock<std::shared_mutex> lock(_heap_gpu_ranges_mutex);
+
+	if (auto it = _heap_gpu_ranges.upper_bound(handle_gpu.ptr);
+		it != _heap_gpu_ranges.begin())
 	{
-		if (heap_impl == nullptr || handle_gpu.ptr < heap_impl->_orig_base_gpu_handle.ptr)
-			continue;
+		--it;
 
-		D3D12_DESCRIPTOR_HEAP_DESC desc = heap_impl->_orig->GetDesc();
-		if (handle_gpu.ptr >= offset_descriptor_handle(heap_impl->_orig_base_gpu_handle, desc.NumDescriptors, desc.Type).ptr)
-			continue;
+		const UINT64 beg_gpu_handle = it->first;
+		const UINT64 end_gpu_handle = it->second.first;
 
-		*heap = to_handle(heap_impl->_orig);
+		if (handle_gpu.ptr >= beg_gpu_handle && handle_gpu.ptr < end_gpu_handle)
+		{
+			D3D12DescriptorHeap *const heap_impl = it->second.second;
 
-		if (offset != nullptr)
-			*offset = static_cast<uint32_t>((handle_gpu.ptr - heap_impl->_orig_base_gpu_handle.ptr) / _descriptor_handle_size[desc.Type]) + binding;
-		return;
+			*heap = to_handle(heap_impl->_orig);
+
+			if (offset != nullptr)
+			{
+				const D3D12_DESCRIPTOR_HEAP_TYPE type = heap_impl->_orig->GetDesc().Type;
+				*offset = static_cast<uint32_t>((handle_gpu.ptr - heap_impl->_orig_base_gpu_handle.ptr) / _descriptor_handle_size[type]) + binding;
+			}
+			return;
+		}
 	}
 #else
 	if (_gpu_view_heap.contains(handle_gpu))
@@ -2213,6 +2224,15 @@ void reshade::d3d12::device_impl::register_descriptor_heap(D3D12DescriptorHeap *
 	const auto it = _descriptor_heaps.push_back(heap);
 
 	heap->initialize_descriptor_base_handle(std::distance(_descriptor_heaps.begin(), it));
+
+	const D3D12_DESCRIPTOR_HEAP_DESC desc = heap->_orig->GetDesc();
+
+	const UINT64 beg_gpu_handle = heap->_orig_base_gpu_handle.ptr;
+	const UINT64 end_gpu_handle = beg_gpu_handle + static_cast<UINT64>(desc.NumDescriptors) * _descriptor_handle_size[desc.Type];
+
+	const std::unique_lock<std::shared_mutex> lock(_heap_gpu_ranges_mutex);
+
+	_heap_gpu_ranges[beg_gpu_handle] = { end_gpu_handle, heap };
 }
 void reshade::d3d12::device_impl::unregister_descriptor_heap(D3D12DescriptorHeap *heap)
 {
@@ -2236,6 +2256,10 @@ void reshade::d3d12::device_impl::unregister_descriptor_heap(D3D12DescriptorHeap
 	}
 
 	_descriptor_heaps.resize(num_heaps);
+
+	const std::unique_lock<std::shared_mutex> lock(_heap_gpu_ranges_mutex);
+
+	_heap_gpu_ranges.erase(heap->_orig_base_gpu_handle.ptr);
 }
 
 void D3D12DescriptorHeap::initialize_descriptor_base_handle(size_t heap_index)
@@ -2304,20 +2328,25 @@ D3D12_CPU_DESCRIPTOR_HANDLE reshade::d3d12::device_impl::convert_to_original_cpu
 	const D3D12_GPU_DESCRIPTOR_HANDLE handle_gpu = { table.handle };
 
 #if RESHADE_ADDON >= 2
-	for (D3D12DescriptorHeap *const heap_impl : _descriptor_heaps)
+	const std::shared_lock<std::shared_mutex> lock(_heap_gpu_ranges_mutex);
+
+	if (auto it = _heap_gpu_ranges.upper_bound(handle_gpu.ptr);
+		it != _heap_gpu_ranges.begin())
 	{
-		if (heap_impl == nullptr || handle_gpu.ptr < heap_impl->_orig_base_gpu_handle.ptr)
-			continue;
+		--it;
 
-		D3D12_DESCRIPTOR_HEAP_DESC desc = heap_impl->_orig->GetDesc();
-		if (handle_gpu.ptr >= offset_descriptor_handle(heap_impl->_orig_base_gpu_handle, desc.NumDescriptors, desc.Type).ptr)
-			continue;
+		const UINT64 beg_gpu_handle = it->first;
+		const UINT64 end_gpu_handle = it->second.first;
 
-		handle.ptr = heap_impl->_orig_base_cpu_handle.ptr + static_cast<SIZE_T>(handle_gpu.ptr - heap_impl->_orig_base_gpu_handle.ptr);
+		if (handle_gpu.ptr >= beg_gpu_handle && handle_gpu.ptr < end_gpu_handle)
+		{
+			D3D12DescriptorHeap *const heap_impl = it->second.second;
 
-		if (type != nullptr)
-			*type = desc.Type;
-		break;
+			if (type != nullptr)
+				*type = heap_impl->_orig->GetDesc().Type;
+
+			handle.ptr = heap_impl->_orig_base_cpu_handle.ptr + static_cast<SIZE_T>(handle_gpu.ptr - heap_impl->_orig_base_gpu_handle.ptr);
+		}
 	}
 #else
 	if (_gpu_view_heap.contains(handle_gpu))

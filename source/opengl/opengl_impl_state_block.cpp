@@ -3,9 +3,10 @@
  * SPDX-License-Identifier: BSD-3-Clause
  */
 
+#include "opengl_impl_device.hpp"
 #include "opengl_impl_state_block.hpp"
 
-#define gl gl3wProcs.gl
+#define gl _device_impl->_dispatch_table
 
 #define glEnableOrDisable(cap, enable) \
 	if (enable) { \
@@ -15,11 +16,12 @@
 		gl.Disable(cap); \
 	}
 
-reshade::opengl::state_block::state_block()
+reshade::opengl::state_block::state_block(device_impl *device) :
+	_device_impl(device)
 {
 }
 
-void reshade::opengl::state_block::capture(bool compatibility)
+void reshade::opengl::state_block::capture()
 {
 	gl.GetIntegerv(GL_COPY_READ_BUFFER_BINDING, &_copy_read);
 	gl.GetIntegerv(GL_COPY_WRITE_BUFFER_BINDING, &_copy_write);
@@ -65,8 +67,8 @@ void reshade::opengl::state_block::capture(bool compatibility)
 
 	_srgb_enable = gl.IsEnabled(GL_FRAMEBUFFER_SRGB);
 
-	if (compatibility)
-		_alpha_test = gl.IsEnabled(0x0BC0 /* GL_ALPHA_TEST */);
+	if (_device_impl->get_compatibility_context())
+		_alpha_test = gl.IsEnabled(GL_ALPHA_TEST);
 
 	_sample_alpha_to_coverage = gl.IsEnabled(GL_SAMPLE_ALPHA_TO_COVERAGE);
 	_blend_enable = gl.IsEnabled(GL_BLEND);
@@ -104,13 +106,13 @@ void reshade::opengl::state_block::capture(bool compatibility)
 	gl.GetIntegerv(GL_STENCIL_PASS_DEPTH_FAIL, &_stencil_op_depth_fail);
 	gl.GetIntegerv(GL_STENCIL_PASS_DEPTH_PASS, &_stencil_op_depth_pass);
 
-	if (gl.ClipControl != nullptr)
+	if (gl.VERSION_4_5)
 	{
 		gl.GetIntegerv(GL_CLIP_ORIGIN, &_clip_origin);
 		gl.GetIntegerv(GL_CLIP_DEPTH_MODE, &_clip_depthmode);
 	}
 }
-void reshade::opengl::state_block::apply(bool compatibility) const
+void reshade::opengl::state_block::apply() const
 {
 	gl.BindBuffer(GL_COPY_READ_BUFFER, _copy_read);
 	gl.BindBuffer(GL_COPY_WRITE_BUFFER, _copy_write);
@@ -161,8 +163,8 @@ void reshade::opengl::state_block::apply(bool compatibility) const
 
 	glEnableOrDisable(GL_FRAMEBUFFER_SRGB, _srgb_enable);
 
-	if (compatibility)
-		glEnableOrDisable(0x0BC0 /* GL_ALPHA_TEST */, _alpha_test);
+	if (_device_impl->get_compatibility_context())
+		glEnableOrDisable(GL_ALPHA_TEST, _alpha_test);
 
 	glEnableOrDisable(GL_BLEND, _blend_enable);
 	glEnableOrDisable(GL_COLOR_LOGIC_OP, _logic_op_enable);
@@ -191,7 +193,7 @@ void reshade::opengl::state_block::apply(bool compatibility) const
 	gl.StencilOp(_stencil_op_fail, _stencil_op_depth_fail, _stencil_op_depth_pass);
 	gl.StencilFunc(_stencil_func, _stencil_reference_value, _stencil_read_mask);
 
-	if (gl.ClipControl != nullptr)
+	if (gl.VERSION_4_5)
 	{
 		gl.ClipControl(_clip_origin, _clip_depthmode);
 	}

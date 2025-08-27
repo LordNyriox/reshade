@@ -72,7 +72,7 @@ void reshade::d3d11::device_context_impl::barrier(uint32_t count, const api::res
 	if (transitions_away_from_shader_resource_usage != 0)
 	{
 #if 1
-#define UNBIND_SHADER_RESOURCE_VIEWS(stage) \
+#define RESHADE_D3D11_UNBIND_SHADER_RESOURCE_VIEWS(stage) \
 		bool update_##stage = false; \
 		com_ptr<ID3D11ShaderResourceView> srvs_##stage[D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT]; \
 		_orig->stage##GetShaderResources(0, D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT, reinterpret_cast<ID3D11ShaderResourceView **>(srvs_##stage)); \
@@ -92,22 +92,22 @@ void reshade::d3d11::device_context_impl::barrier(uint32_t count, const api::res
 		if (update_##stage) \
 			_orig->stage##SetShaderResources(0, D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT, reinterpret_cast<ID3D11ShaderResourceView *const *>(srvs_##stage));
 #else
-#define UNBIND_SHADER_RESOURCE_VIEWS(stage) \
+#define RESHADE_D3D11_UNBIND_SHADER_RESOURCE_VIEWS(stage) \
 		ID3D11ShaderResourceView *null_srvs_##stage[D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT] = {}; \
 		_orig->stage##SetShaderResources(0, D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT, null_srvs_##stage);
 #endif
 
-		UNBIND_SHADER_RESOURCE_VIEWS(VS);
+		RESHADE_D3D11_UNBIND_SHADER_RESOURCE_VIEWS(VS);
 #if 0
 		// Not currently covered by state block (see d3d11_impl_state_block.cpp)
-		UNBIND_SHADER_RESOURCE_VIEWS(HS);
-		UNBIND_SHADER_RESOURCE_VIEWS(DS);
+		RESHADE_D3D11_UNBIND_SHADER_RESOURCE_VIEWS(HS);
+		RESHADE_D3D11_UNBIND_SHADER_RESOURCE_VIEWS(DS);
 #endif
-		UNBIND_SHADER_RESOURCE_VIEWS(GS);
-		UNBIND_SHADER_RESOURCE_VIEWS(PS);
-		UNBIND_SHADER_RESOURCE_VIEWS(CS);
+		RESHADE_D3D11_UNBIND_SHADER_RESOURCE_VIEWS(GS);
+		RESHADE_D3D11_UNBIND_SHADER_RESOURCE_VIEWS(PS);
+		RESHADE_D3D11_UNBIND_SHADER_RESOURCE_VIEWS(CS);
 
-#undef UNBIND_SHADER_RESOURCE_VIEWS
+#undef RESHADE_D3D11_UNBIND_SHADER_RESOURCE_VIEWS
 	}
 	if (transitions_away_from_unordered_access_usage != 0)
 	{
@@ -118,7 +118,7 @@ void reshade::d3d11::device_context_impl::barrier(uint32_t count, const api::res
 			feature_level >= D3D_FEATURE_LEVEL_10_0 ? D3D11_CS_4_X_UAV_REGISTER_COUNT : 0;
 
 #if 1
-#define UNBIND_UNORDERED_ACCESS_VIEWS(stage) \
+#define RESHADE_D3D11_UNBIND_UNORDERED_ACCESS_VIEWS(stage) \
 		bool update_##stage = false; \
 		com_ptr<ID3D11UnorderedAccessView> uavs_##stage[D3D11_1_UAV_SLOT_COUNT]; \
 		_orig->stage##GetUnorderedAccessViews(0, max_uav_bindings, reinterpret_cast<ID3D11UnorderedAccessView **>(uavs_##stage)); \
@@ -138,14 +138,14 @@ void reshade::d3d11::device_context_impl::barrier(uint32_t count, const api::res
 		if (update_##stage) \
 			_orig->stage##SetUnorderedAccessViews(0, max_uav_bindings, reinterpret_cast<ID3D11UnorderedAccessView *const *>(uavs_##stage), nullptr);
 #else
-#define UNBIND_UNORDERED_ACCESS_VIEWS(stage) \
+#define RESHADE_D3D11_UNBIND_UNORDERED_ACCESS_VIEWS(stage) \
 		ID3D11UnorderedAccessView *null_uavs_##stage[D3D11_1_UAV_SLOT_COUNT] = {}; \
 		_orig->CSSetUnorderedAccessViews(0, max_uav_bindings, null_uavs_##stage, nullptr);
 #endif
 
-		UNBIND_UNORDERED_ACCESS_VIEWS(CS);
+		RESHADE_D3D11_UNBIND_UNORDERED_ACCESS_VIEWS(CS);
 
-#undef UNBIND_UNORDERED_ACCESS_VIEWS
+#undef RESHADE_D3D11_UNBIND_UNORDERED_ACCESS_VIEWS
 	}
 }
 
@@ -785,6 +785,21 @@ void reshade::d3d11::device_context_impl::build_acceleration_structure(api::acce
 void reshade::d3d11::device_context_impl::query_acceleration_structures(uint32_t, const api::resource_view *, api::query_heap, api::query_type, uint32_t)
 {
 	assert(false);
+}
+
+void reshade::d3d11::device_context_impl::update_buffer_region(const void *data, api::resource dest, uint64_t dest_offset, uint64_t size)
+{
+	assert(dest != 0);
+
+	const D3D11_BOX box = { static_cast<UINT>(dest_offset), 0, 0, static_cast<UINT>(dest_offset + size), 1, 1 };
+
+	_orig->UpdateSubresource(reinterpret_cast<ID3D11Resource *>(dest.handle), 0, dest_offset != 0 ? &box : nullptr, data, static_cast<UINT>(size), 0);
+}
+void reshade::d3d11::device_context_impl::update_texture_region(const api::subresource_data &data, api::resource dest, uint32_t dest_subresource, const api::subresource_box *dest_box)
+{
+	assert(dest != 0);
+
+	_orig->UpdateSubresource(reinterpret_cast<ID3D11Resource *>(dest.handle), dest_subresource, reinterpret_cast<const D3D11_BOX *>(dest_box), data.data, data.row_pitch, data.slice_pitch);
 }
 
 void reshade::d3d11::device_context_impl::begin_debug_event(const char *label, const float[4])

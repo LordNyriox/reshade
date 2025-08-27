@@ -144,8 +144,9 @@ void reshade::runtime::build_font_atlas()
 	atlas->Clear();
 
 	std::error_code ec;
-	const ImWchar *glyph_ranges = nullptr;
+	const ImWchar *glyph_ranges = atlas->GetGlyphRangesDefault();
 	std::filesystem::path resolved_font_path;
+	_default_font_path.clear();
 
 #if RESHADE_LOCALIZATION
 	std::string language = _selected_language;
@@ -166,7 +167,8 @@ void reshade::runtime::build_font_atlas()
 		// Morisawa BIZ UDGothic Regular, available since Windows 10 October 2018 Update (1809) Build 17763.1
 		_default_font_path = L"C:\\Windows\\Fonts\\BIZ-UDGothicR.ttc";
 		if (!std::filesystem::exists(_default_font_path, ec))
-			_default_font_path = L"C:\\Windows\\Fonts\\msgothic.ttc"; // MS Gothic
+			// MS Gothic
+			_default_font_path = L"C:\\Windows\\Fonts\\msgothic.ttc";
 	}
 	else
 	if (language.find("ko") == 0)
@@ -178,19 +180,28 @@ void reshade::runtime::build_font_atlas()
 	else
 	if (language.find("zh") == 0)
 	{
-		glyph_ranges = GetGlyphRangesChineseSimplifiedGB2312();
+		// Simplified Chinese (zh-CN, zh-SG, ...)
+		if (language.find("HK") == std::string::npos && language.find("TW") == std::string::npos && language.find("Hant") == std::string::npos)
+		{
+			glyph_ranges = GetGlyphRangesChineseSimplifiedGB2312();
 
-		_default_font_path = L"C:\\Windows\\Fonts\\msyh.ttc"; // Microsoft YaHei
-		if (!std::filesystem::exists(_default_font_path, ec))
-			_default_font_path = L"C:\\Windows\\Fonts\\simsun.ttc"; // SimSun
+			// Microsoft YaHei
+			_default_font_path = L"C:\\Windows\\Fonts\\msyh.ttc";
+			if (!std::filesystem::exists(_default_font_path, ec))
+				_default_font_path = L"C:\\Windows\\Fonts\\simsun.ttc";
+		}
+		// Traditional Chinese (zh-HK, zh-TW, zh-Hant, ...)
+		else
+		{
+			glyph_ranges = atlas->GetGlyphRangesChineseFull();
+
+			// Microsoft JhengHei
+			_default_font_path = L"C:\\Windows\\Fonts\\msjh.ttc";
+			if (!std::filesystem::exists(_default_font_path, ec))
+				_default_font_path = L"C:\\Windows\\Fonts\\mingliu.ttc"; 
+		}
 	}
-	else
 #endif
-	{
-		glyph_ranges = atlas->GetGlyphRangesDefault();
-
-		_default_font_path.clear();
-	}
 
 	const auto add_font_from_file = [atlas](std::filesystem::path &font_path, ImFontConfig cfg, const ImWchar *glyph_ranges, std::error_code &ec) -> bool {
 		if (font_path.empty())
@@ -896,7 +907,6 @@ void reshade::runtime::draw_gui()
 #endif
 
 	_ignore_shortcuts = false;
-	_block_input_next_frame = false;
 	_gather_gpu_statistics = false;
 	_effects_expanded_state &= 2;
 
@@ -908,9 +918,9 @@ void reshade::runtime::draw_gui()
 	{
 		if (_input != nullptr)
 		{
-			_input->block_mouse_input(false);
-			_input->block_keyboard_input(false);
-			_input->block_mouse_cursor_warping(false);
+			_input->block_mouse_input(_block_input_next_frame);
+			_input->block_keyboard_input(_block_input_next_frame);
+			_input->block_mouse_cursor_warping(_block_input_next_frame);
 		}
 		return; // Early-out to avoid costly ImGui calls when no GUI elements are on the screen
 	}
@@ -2755,51 +2765,116 @@ void reshade::runtime::draw_gui_statistics()
 
 	if (ImGui::CollapsingHeader(_("Render Targets & Textures"), ImGuiTreeNodeFlags_DefaultOpen) && !is_loading())
 	{
-		const auto texture_format_info = [](reshadefx::texture_format format) -> std::pair<const char *, int> {
-			switch (format)
+		struct texture_format_info
+		{
+			explicit texture_format_info(reshadefx::texture_format format)
 			{
-			default:
-				assert(false);
-				[[fallthrough]];
-			case reshadefx::texture_format::unknown:
-				return { "unknown", 0 };
-			case reshadefx::texture_format::r8:
-				return { "R8", 1 };
-			case reshadefx::texture_format::r16:
-				return { "R16", 2 };
-			case reshadefx::texture_format::r16f:
-				return { "R16F", 2 };
-			case reshadefx::texture_format::r32i:
-				return { "R32I", 4 };
-			case reshadefx::texture_format::r32u:
-				return { "R32U", 4 };
-			case reshadefx::texture_format::r32f:
-				return { "R32F", 4 };
-			case reshadefx::texture_format::rg8:
-				return { "RG8", 2 };
-			case reshadefx::texture_format::rg16:
-				return { "RG16", 4 };
-			case reshadefx::texture_format::rg16f:
-				return { "RG16F", 4 };
-			case reshadefx::texture_format::rg32f:
-				return { "RG32F", 8 };
-			case reshadefx::texture_format::rgba8:
-				return { "RGBA8", 4 };
-			case reshadefx::texture_format::rgba16:
-				return { "RGBA16", 8 };
-			case reshadefx::texture_format::rgba16f:
-				return { "RGBA16F", 8 };
-			case reshadefx::texture_format::rgba32i:
-				return { "RGBA32I", 16 };
-			case reshadefx::texture_format::rgba32u:
-				return { "RGBA32U", 16 };
-			case reshadefx::texture_format::rgba32f:
-				return { "RGBA32F", 16 };
-			case reshadefx::texture_format::rgb10a2:
-				return { "RGB10A2", 4 };
-			case reshadefx::texture_format::rg11b10f:
-				return { "RG11B10F", 4 };
+				switch (format)
+				{
+				default:
+					assert(false);
+					[[fallthrough]];
+				case reshadefx::texture_format::unknown:
+					name = "unknown";
+					bytes_per_pixel = 0;
+					components = 0;
+					break;
+				case reshadefx::texture_format::r8:
+					name = "R8";
+					bytes_per_pixel = 1;
+					components = 1;
+					break;
+				case reshadefx::texture_format::r16f:
+					name = "R16F";
+					bytes_per_pixel = 2;
+					components = 1;
+					break;
+				case reshadefx::texture_format::r16:
+					name = "R16";
+					bytes_per_pixel = 2;
+					components = 1;
+					break;
+				case reshadefx::texture_format::r32f:
+					name = "R32F";
+					bytes_per_pixel = 4;
+					components = 1;
+					break;
+				case reshadefx::texture_format::r32u:
+					name = "R32U";
+					bytes_per_pixel = 4;
+					components = 1;
+					break;
+				case reshadefx::texture_format::r32i:
+					name = "R32I";
+					bytes_per_pixel = 4;
+					components = 1;
+					break;
+				case reshadefx::texture_format::rg8:
+					name = "RG8";
+					bytes_per_pixel = 2;
+					components = 2;
+					break;
+				case reshadefx::texture_format::rg16f:
+					name = "RG16F";
+					bytes_per_pixel = 4;
+					components = 2;
+					break;
+				case reshadefx::texture_format::rg16:
+					name = "RG16";
+					bytes_per_pixel = 4;
+					components = 2;
+					break;
+				case reshadefx::texture_format::rg32f:
+					name = "RG32F";
+					bytes_per_pixel = 8;
+					components = 2;
+					break;
+				case reshadefx::texture_format::rgba8:
+					name = "RGBA8";
+					bytes_per_pixel = 4;
+					components = 4;
+					break;
+				case reshadefx::texture_format::rgba16f:
+					name = "RGBA16F";
+					bytes_per_pixel = 8;
+					components = 4;
+					break;
+				case reshadefx::texture_format::rgba16:
+					name = "RGBA16";
+					bytes_per_pixel = 8;
+					components = 4;
+					break;
+				case reshadefx::texture_format::rgba32f:
+					name = "RGBA32F";
+					bytes_per_pixel = 16;
+					components = 4;
+					break;
+				case reshadefx::texture_format::rgba32u:
+					name = "RGBA32U";
+					bytes_per_pixel = 16;
+					components = 4;
+					break;
+				case reshadefx::texture_format::rgba32i:
+					name = "RGBA32I";
+					bytes_per_pixel = 16;
+					components = 4;
+					break;
+				case reshadefx::texture_format::rgb10a2:
+					name = "RGB10A2";
+					bytes_per_pixel = 4;
+					components = 4;
+					break;
+				case reshadefx::texture_format::rg11b10f:
+					name = "RG11B10F";
+					bytes_per_pixel = 4;
+					components = 3;
+					break;
+				}
 			}
+
+			const char *name;
+			int bytes_per_pixel;
+			int components;
 		};
 
 		const float total_width = ImGui::GetContentRegionAvail().x;
@@ -2824,7 +2899,7 @@ void reshade::runtime::draw_gui_statistics()
 
 			int64_t memory_size = 0;
 			for (uint32_t level = 0, width = tex.width, height = tex.height, depth = tex.depth; level < tex.levels; ++level, width /= 2, height /= 2, depth /= 2)
-				memory_size += static_cast<size_t>(width) * static_cast<size_t>(height) * static_cast<size_t>(depth) * texture_format_info(tex.format).second;
+				memory_size += static_cast<size_t>(width) * static_cast<size_t>(height) * static_cast<size_t>(depth) * texture_format_info(tex.format).bytes_per_pixel;
 
 			post_processing_memory_size += memory_size;
 
@@ -2847,7 +2922,7 @@ void reshade::runtime::draw_gui_statistics()
 				ImGui::Text("%u | %u mipmap(s) | %s | %lld.%03lld %s",
 					tex.width,
 					tex.levels - 1,
-					texture_format_info(tex.format).first,
+					texture_format_info(tex.format).name,
 					memory_view.quot, memory_view.rem, memory_size_unit);
 				break;
 			case reshadefx::texture_type::texture_2d:
@@ -2855,7 +2930,7 @@ void reshade::runtime::draw_gui_statistics()
 					tex.width,
 					tex.height,
 					tex.levels - 1,
-					texture_format_info(tex.format).first,
+					texture_format_info(tex.format).name,
 					memory_view.quot, memory_view.rem, memory_size_unit);
 				break;
 			case reshadefx::texture_type::texture_3d:
@@ -2864,7 +2939,7 @@ void reshade::runtime::draw_gui_statistics()
 					tex.height,
 					tex.depth,
 					tex.levels - 1,
-					texture_format_info(tex.format).first,
+					texture_format_info(tex.format).name,
 					memory_view.quot, memory_view.rem, memory_size_unit);
 				break;
 			}
@@ -2922,8 +2997,7 @@ void reshade::runtime::draw_gui_statistics()
 				}
 			}
 
-			const bool supports_saving =
-				tex.type != reshadefx::texture_type::texture_3d && (
+			const bool supports_saving = (tex.type != reshadefx::texture_type::texture_3d) && (
 				tex.format == reshadefx::texture_format::r8 ||
 				tex.format == reshadefx::texture_format::rg8 ||
 				tex.format == reshadefx::texture_format::rgba8 ||
@@ -2995,13 +3069,13 @@ void reshade::runtime::draw_gui_statistics()
 				ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(1, 0, 0, 1));
 				imgui::toggle_button("R", r, 0.0f, ImGuiButtonFlags_AlignTextBaseLine);
 				ImGui::PopStyleColor();
-				if (tex.format >= reshadefx::texture_format::rg8)
+				if (texture_format_info(tex.format).components >= 2)
 				{
 					ImGui::SameLine(0, 1);
 					ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0, 1, 0, 1));
 					imgui::toggle_button("G", g, 0.0f, ImGuiButtonFlags_AlignTextBaseLine);
 					ImGui::PopStyleColor();
-					if (tex.format >= reshadefx::texture_format::rgba8)
+					if (texture_format_info(tex.format).components >= 3)
 					{
 						ImGui::SameLine(0, 1);
 						ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0, 0, 1, 1));
@@ -3162,9 +3236,9 @@ The above copyright notice and this permission notice shall be included in all c
 \
 THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.");
 	}
-	if (ImGui::CollapsingHeader("gl3w"))
+	if (ImGui::CollapsingHeader("glad"))
 	{
-		const resources::data_resource resource = resources::load_data_resource(IDR_LICENSE_GL3W);
+		const resources::data_resource resource = resources::load_data_resource(IDR_LICENSE_GLAD);
 		ImGui::TextUnformatted(static_cast<const char *>(resource.data), static_cast<const char *>(resource.data) + resource.data_size);
 	}
 	if (ImGui::CollapsingHeader("UTF8-CPP"))
@@ -3188,11 +3262,6 @@ THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMP
 	if (ImGui::CollapsingHeader("SPIR-V"))
 	{
 		const resources::data_resource resource = resources::load_data_resource(IDR_LICENSE_SPIRV);
-		ImGui::TextUnformatted(static_cast<const char *>(resource.data), static_cast<const char *>(resource.data) + resource.data_size);
-	}
-	if (ImGui::CollapsingHeader("Vulkan & Vulkan-Loader"))
-	{
-		const resources::data_resource resource = resources::load_data_resource(IDR_LICENSE_VULKAN);
 		ImGui::TextUnformatted(static_cast<const char *>(resource.data), static_cast<const char *>(resource.data) + resource.data_size);
 	}
 	if (ImGui::CollapsingHeader("Vulkan Memory Allocator"))
@@ -4974,14 +5043,8 @@ void reshade::runtime::destroy_imgui_resources()
 bool reshade::runtime::open_overlay(bool open, api::input_source source)
 {
 #if RESHADE_ADDON
-	if (!_is_in_api_call)
-	{
-		_is_in_api_call = true;
-		const bool skip = invoke_addon_event<addon_event::reshade_open_overlay>(this, open, source);
-		_is_in_api_call = false;
-		if (skip)
-			return false;
-	}
+	if (invoke_addon_event<addon_event::reshade_open_overlay>(this, open, source))
+		return false;
 #endif
 
 	_show_overlay = open;
