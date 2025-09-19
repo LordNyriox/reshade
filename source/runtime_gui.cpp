@@ -1046,7 +1046,7 @@ void reshade::runtime::draw_gui()
 		{
 			ImGui::TextUnformatted("ReShade " VERSION_STRING_PRODUCT);
 
-			if ((s_latest_version[0] > VERSION_MAJOR) ||
+			/*if ((s_latest_version[0] > VERSION_MAJOR) ||
 				(s_latest_version[0] == VERSION_MAJOR && s_latest_version[1] > VERSION_MINOR) ||
 				(s_latest_version[0] == VERSION_MAJOR && s_latest_version[1] == VERSION_MINOR && s_latest_version[2] > VERSION_REVISION))
 			{
@@ -1058,7 +1058,7 @@ void reshade::runtime::draw_gui()
 			else
 			{
 				ImGui::Text(_("Visit %s for news, updates, effects and discussion."), "https://reshade.me");
-			}
+			}*/
 
 			ImGui::Spacing();
 
@@ -1746,7 +1746,7 @@ void reshade::runtime::draw_gui_home()
 			if (_preset_is_incomplete)
 				ImGui::OpenPopup("##presetincomplete");
 
-			_show_splash = true;
+			_show_splash = false; // Hide splash bar
 			_preset_is_modified = false;
 			_last_preset_switching_time = _last_present_time;
 			_is_in_preset_transition = true;

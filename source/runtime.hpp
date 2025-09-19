@@ -169,7 +169,7 @@ namespace reshade
 		void reload_effect_next_frame(const char *effect_name) final;
 
 	private:
-		static void check_for_update();
+		//static void check_for_update();
 
 		void load_config();
 		void save_config() const;
@@ -252,7 +252,7 @@ namespace reshade
 #endif
 
 		#pragma region Status
-		static unsigned int s_latest_version[3];
+		//static unsigned int s_latest_version[3];
 
 		bool _is_initialized = false;
 		bool _preset_is_incomplete = false;
