@@ -66,11 +66,11 @@ static GLuint64 get_resource_import_size(const reshade::api::resource_desc &desc
 			for (uint32_t i = 0; i < num_physical_devices; ++i)
 			{
 				VkPhysicalDeviceProperties2 props { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2 };
-				VkPhysicalDeviceIDProperties id_props { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES };
-				props.pNext = &id_props;
+				VkPhysicalDeviceIDProperties device_id_props { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES };
+				props.pNext = &device_id_props;
 				vk.GetPhysicalDeviceProperties2(physical_devices[i], &props);
 
-				if (id_props.deviceLUIDValid && std::memcmp(id_props.deviceLUID, device_luid, 8) == 0)
+				if (device_id_props.deviceLUIDValid && std::memcmp(device_id_props.deviceLUID, device_luid, 8) == 0)
 				{
 					physical_device = physical_devices[i];
 					break;
@@ -307,6 +307,13 @@ bool reshade::opengl::device_impl::get_property(api::device_properties property,
 		std::strncpy(static_cast<char *>(data), reinterpret_cast<const char *>(name), 256);
 		return true;
 	}
+	case api::device_properties::adapter_luid:
+		if (gl.EXT_memory_object)
+		{
+			gl.GetUnsignedBytevEXT(GL_DEVICE_LUID_EXT, static_cast<GLubyte *>(data));
+			return true;
+		}
+		return false;
 	default:
 		return false;
 	}
@@ -2145,9 +2152,6 @@ bool reshade::opengl::device_impl::create_pipeline(api::pipeline_layout, uint32_
 	impl->topology = topology;
 
 	impl->sample_alpha_to_coverage = blend_desc.alpha_to_coverage_enable;
-	impl->logic_op_enable = blend_desc.logic_op_enable[0]; // Logic operation applies to all attachments
-	impl->logic_op = convert_logic_op(blend_desc.logic_op[0]);
-	std::copy_n(blend_desc.blend_constant, 4, impl->blend_constant);
 	for (int i = 0; i < 8; ++i)
 	{
 		impl->blend_enable[i] = blend_desc.blend_enable[i];
@@ -2162,6 +2166,9 @@ bool reshade::opengl::device_impl::create_pipeline(api::pipeline_layout, uint32_
 		impl->color_write_mask[i][2] = (blend_desc.render_target_write_mask[i] & (1 << 2)) != 0;
 		impl->color_write_mask[i][3] = (blend_desc.render_target_write_mask[i] & (1 << 3)) != 0;
 	}
+	std::copy_n(blend_desc.blend_constant, 4, impl->blend_constant);
+	impl->logic_op_enable = blend_desc.logic_op_enable[0]; // Logic operation applies to all attachments
+	impl->logic_op = convert_logic_op(blend_desc.logic_op[0]);
 	impl->sample_mask = sample_mask;
 
 	impl->polygon_mode = convert_fill_mode(rasterizer_desc.fill_mode);
@@ -2181,18 +2188,18 @@ bool reshade::opengl::device_impl::create_pipeline(api::pipeline_layout, uint32_
 	impl->stencil_test = depth_stencil_desc.stencil_enable;
 	impl->front_stencil_read_mask = depth_stencil_desc.front_stencil_read_mask;
 	impl->front_stencil_write_mask = depth_stencil_desc.front_stencil_write_mask;
-	impl->front_stencil_reference_value = static_cast<GLint>(depth_stencil_desc.front_stencil_reference_value);
+	impl->front_stencil_reference_value = depth_stencil_desc.front_stencil_reference_value;
 	impl->front_stencil_func = convert_compare_op(depth_stencil_desc.front_stencil_func);
-	impl->front_stencil_op_fail = convert_stencil_op(depth_stencil_desc.front_stencil_fail_op);
-	impl->front_stencil_op_depth_fail = convert_stencil_op(depth_stencil_desc.front_stencil_depth_fail_op);
-	impl->front_stencil_op_pass = convert_stencil_op(depth_stencil_desc.front_stencil_pass_op);
+	impl->front_stencil_pass_op = convert_stencil_op(depth_stencil_desc.front_stencil_pass_op);
+	impl->front_stencil_fail_op = convert_stencil_op(depth_stencil_desc.front_stencil_fail_op);
+	impl->front_stencil_depth_fail_op = convert_stencil_op(depth_stencil_desc.front_stencil_depth_fail_op);
 	impl->back_stencil_read_mask = depth_stencil_desc.back_stencil_read_mask;
 	impl->back_stencil_write_mask = depth_stencil_desc.back_stencil_write_mask;
-	impl->back_stencil_reference_value = static_cast<GLint>(depth_stencil_desc.back_stencil_reference_value);
+	impl->back_stencil_reference_value = depth_stencil_desc.back_stencil_reference_value;
 	impl->back_stencil_func = convert_compare_op(depth_stencil_desc.back_stencil_func);
-	impl->back_stencil_op_fail = convert_stencil_op(depth_stencil_desc.back_stencil_fail_op);
-	impl->back_stencil_op_depth_fail = convert_stencil_op(depth_stencil_desc.back_stencil_depth_fail_op);
-	impl->back_stencil_op_pass = convert_stencil_op(depth_stencil_desc.back_stencil_pass_op);
+	impl->back_stencil_pass_op = convert_stencil_op(depth_stencil_desc.back_stencil_pass_op);
+	impl->back_stencil_fail_op = convert_stencil_op(depth_stencil_desc.back_stencil_fail_op);
+	impl->back_stencil_depth_fail_op = convert_stencil_op(depth_stencil_desc.back_stencil_depth_fail_op);
 
 	*out_pipeline = { reinterpret_cast<uintptr_t>(impl) };
 	return true;

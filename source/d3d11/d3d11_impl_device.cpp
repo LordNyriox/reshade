@@ -34,6 +34,10 @@ reshade::d3d11::device_impl::device_impl(ID3D11Device *device) :
 {
 	load_driver_extensions();
 }
+reshade::d3d11::device_impl::~device_impl()
+{
+	unload_driver_extensions();
+}
 
 bool reshade::d3d11::device_impl::get_property(api::device_properties property, void *data) const
 {
@@ -73,6 +77,14 @@ bool reshade::d3d11::device_impl::get_property(api::device_properties property, 
 		{
 			static_assert(std::size(adapter_desc.Description) <= 256);
 			utf8::unchecked::utf16to8(adapter_desc.Description, adapter_desc.Description + std::size(adapter_desc.Description), static_cast<char *>(data));
+			return true;
+		}
+		return false;
+	case api::device_properties::adapter_luid:
+		if (DXGI_ADAPTER_DESC adapter_desc;
+			adapter_from_device(_orig, &adapter_desc))
+		{
+			*static_cast<LUID *>(data) = adapter_desc.AdapterLuid;
 			return true;
 		}
 		return false;

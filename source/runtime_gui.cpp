@@ -186,7 +186,7 @@ void reshade::runtime::build_font_atlas()
 			// Microsoft JhengHei
 			_default_font_path = L"C:\\Windows\\Fonts\\msjh.ttc";
 			if (!std::filesystem::exists(_default_font_path, ec))
-				_default_font_path = L"C:\\Windows\\Fonts\\mingliu.ttc"; 
+				_default_font_path = L"C:\\Windows\\Fonts\\mingliu.ttc";
 		}
 	}
 #endif
@@ -203,16 +203,16 @@ void reshade::runtime::build_font_atlas()
 			if (FILE *const file = _wfsopen(font_path.c_str(), L"rb", SH_DENYNO))
 			{
 				fseek(file, 0, SEEK_END);
-				const auto data_size = ftell(file);
+				const size_t file_size = ftell(file);
 				fseek(file, 0, SEEK_SET);
 
-				const auto data = IM_ALLOC(data_size);
-				const auto data_size_read = fread(data, 1, data_size, file);
+				void *data = IM_ALLOC(file_size);
+				const size_t file_size_read = fread(data, 1, file_size, file);
 				fclose(file);
 
-				if (data_size_read != data_size)
+				if (file_size_read != file_size)
 					IM_FREE(data);
-				else if (atlas->AddFontFromMemoryTTF(data, static_cast<int>(data_size), 0.0f, font_config))
+				else if (atlas->AddFontFromMemoryTTF(data, static_cast<int>(file_size), 0.0f, font_config))
 					return true;
 			}
 		}
@@ -3044,14 +3044,17 @@ void reshade::runtime::draw_gui_log()
 	ImGui::Spacing();
 
 	const uintmax_t file_size = std::filesystem::file_size(log_path, ec);
-	if (filter_changed || _last_log_size != file_size)
+	// Defer log reloading during user interface interactions to avoid interfering with tab switching
+	if (filter_changed || (_last_log_size != file_size && !ImGui::IsAnyItemActive() && !ImGui::IsAnyItemFocused() && !_log_editor.has_selection()))
 	{
-		_log_editor.clear_text();
 		_log_editor.set_readonly(true);
 
 		if (FILE *const file = _wfsopen(log_path.c_str(), L"r", SH_DENYNO))
 		{
-			imgui::code_editor::text_pos line_pos;
+			if (filter_changed || file_size <= _last_log_size)
+				_log_editor.clear_text();
+			else
+				fseek(file, static_cast<long>(_last_log_size), SEEK_SET);
 
 			char line_data[2048];
 			while (fgets(line_data, sizeof(line_data), file))
@@ -3062,7 +3065,9 @@ void reshade::runtime::draw_gui_log()
 					if (line.back() != '\n')
 						continue;
 
-					_log_editor.insert_text(line);
+					const imgui::code_editor::text_pos line_pos_beg = _log_editor.get_text_end();
+					_log_editor.append_text(line);
+					const imgui::code_editor::text_pos line_pos_end = _log_editor.get_text_end();
 
 					imgui::code_editor::color col = imgui::code_editor::color_default;
 					/**/ if (line.find("ERROR |") != std::string_view::npos)
@@ -3076,12 +3081,7 @@ void reshade::runtime::draw_gui_log()
 					else if (line.find("warning") != std::string_view::npos)
 						col = imgui::code_editor::color_warning_marker;
 
-					imgui::code_editor::text_pos next_line_pos = line_pos;
-					next_line_pos.line++;
-
-					_log_editor.colorize(line_pos, next_line_pos, col);
-
-					line_pos = next_line_pos;
+					_log_editor.colorize(line_pos_beg, line_pos_end, col);
 				}
 			}
 
@@ -5007,7 +5007,11 @@ void reshade::runtime::render_imgui_draw_data(api::command_list *cmd_list, ImDra
 }
 void reshade::runtime::destroy_imgui_resources()
 {
-	_imgui_context->IO.Fonts->Clear();
+	ImFontAtlas *const atlas = _imgui_context->IO.Fonts;
+	atlas->Clear();
+
+	// Have to rebuild font atlas next time it is used again, since it is being destroyed here
+	_rebuild_font_atlas = true;
 
 	for (ImTextureData *const texture_data : _imgui_context->PlatformIO.Textures)
 	{
@@ -5025,6 +5029,9 @@ void reshade::runtime::destroy_imgui_resources()
 		texture_data->SetTexID(ImTextureID_Invalid);
 		texture_data->SetStatus(ImTextureStatus_Destroyed);
 	}
+
+	atlas->TexList.clear_delete();
+	atlas->TexData = nullptr;
 
 	for (size_t i = 0; i < std::size(_imgui_vertices); ++i)
 	{
