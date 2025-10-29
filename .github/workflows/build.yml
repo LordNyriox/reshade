@@ -21,8 +21,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
         with:
-          fetch-depth: 0
-          submodules: true
+          fetch-depth: 1
+          submodules: 'recursive'
 
       - name: Set up Python
         uses: actions/setup-python@v6
