@@ -372,6 +372,8 @@ reshade::api::resource_desc reshade::d3d11::convert_resource_desc(const D3D11_BU
 
 	if (internal_desc.Usage == D3D11_USAGE_DYNAMIC)
 		desc.flags |= api::resource_flags::dynamic;
+	else if (internal_desc.Usage == D3D11_USAGE_IMMUTABLE)
+		desc.flags |= api::resource_flags::immutable;
 
 	if ((internal_desc.MiscFlags & D3D11_RESOURCE_MISC_DRAWINDIRECT_ARGS) != 0)
 		desc.usage |= api::resource_usage::indirect_argument;
@@ -402,6 +404,8 @@ reshade::api::resource_desc reshade::d3d11::convert_resource_desc(const D3D11_TE
 
 	if (internal_desc.Usage == D3D11_USAGE_DYNAMIC)
 		desc.flags |= api::resource_flags::dynamic;
+	else if (internal_desc.Usage == D3D11_USAGE_IMMUTABLE)
+		desc.flags |= api::resource_flags::immutable;
 
 	return desc;
 }
@@ -424,6 +428,8 @@ reshade::api::resource_desc reshade::d3d11::convert_resource_desc(const D3D11_TE
 
 	if (internal_desc.Usage == D3D11_USAGE_DYNAMIC)
 		desc.flags |= api::resource_flags::dynamic;
+	else if (internal_desc.Usage == D3D11_USAGE_IMMUTABLE)
+		desc.flags |= api::resource_flags::immutable;
 
 	return desc;
 }
@@ -450,6 +456,8 @@ reshade::api::resource_desc reshade::d3d11::convert_resource_desc(const D3D11_TE
 
 	if (internal_desc.Usage == D3D11_USAGE_DYNAMIC)
 		desc.flags |= api::resource_flags::dynamic;
+	else if (internal_desc.Usage == D3D11_USAGE_IMMUTABLE)
+		desc.flags |= api::resource_flags::immutable;
 
 	return desc;
 }
@@ -721,7 +729,7 @@ void reshade::d3d11::convert_resource_view_desc(const api::resource_view_desc &d
 	if (desc.type == api::resource_view_type::texture_2d || desc.type == api::resource_view_type::texture_2d_array)
 	{
 		internal_desc.Format = convert_format(desc.format);
-		assert(desc.type == api::resource_view_type::buffer || desc.texture.level_count == 1);
+		assert(desc.texture.level_count == 1);
 		switch (desc.type)
 		{
 		case api::resource_view_type::texture_2d:
