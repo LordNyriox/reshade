@@ -1,5 +1,7 @@
 ReShade
 =======
+> [!WARNING]  
+> This repository is for a **fork** of ReShade, tuned to my personal preferences. Check the [Actions tab](https://github.com/LordNyriox/reshade/actions/workflows/build.yml) for builds.
 
 This is a generic post-processing injector for games and video software. It exposes an automated way to access both frame color and depth information and a custom shader language called ReShade FX to write effects like ambient occlusion, depth of field, color correction and more which work everywhere.
 

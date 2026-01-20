@@ -170,7 +170,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD fdwReason, LPVOID)
 				}
 			}
 
-			if (config.get("INSTALL", "Logging") || (!config.has("INSTALL", "Logging") && !GetEnvironmentVariableW(L"RESHADE_DISABLE_LOGGING", nullptr, 0)))
+			/*if (config.get("INSTALL", "Logging") || (!config.has("INSTALL", "Logging") && !GetEnvironmentVariableW(L"RESHADE_DISABLE_LOGGING", nullptr, 0)))
 			{
 				std::filesystem::path log_path = config.path();
 				log_path.replace_extension(L".log");
@@ -192,7 +192,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD fdwReason, LPVOID)
 						reshade::log::message(reshade::log::level::error, "Opening the ReShade log file failed with error code %d.", ec.value());
 #endif
 				}
-			}
+			}*/
 
 			reshade::log::message(reshade::log::level::info,
 				"Initializing crosire's ReShade version '" VERSION_STRING_FILE "' "
