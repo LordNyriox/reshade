@@ -94,10 +94,15 @@ IDirectInputDevice_GetDeviceData_Impl(10, 7, W)
 			\
 			DIDEVCAPS caps = { sizeof(caps) }; \
 			device->GetCapabilities(&caps); \
-			g_dinput_device_type.emplace(device, GET_DIDEVICE_TYPE(caps.dwDevType)); \
 			\
-			reshade::hooks::install("IDirectInputDevice" #device_interface_version #encoding "::GetDeviceState", reshade::hooks::vtable_from_instance(device), 9, &IDirectInputDevice##device_interface_version##encoding##_GetDeviceState); \
-			reshade::hooks::install("IDirectInputDevice" #device_interface_version #encoding "::GetDeviceData", reshade::hooks::vtable_from_instance(device), 10, &IDirectInputDevice##device_interface_version##encoding##_GetDeviceData); \
+			const BYTE device_type = GET_DIDEVICE_TYPE(caps.dwDevType); \
+			g_dinput_device_type.emplace(device, device_type); \
+			\
+			if (device_type == DIDEVTYPE_MOUSE || device_type == DIDEVTYPE_KEYBOARD) \
+			{ \
+				reshade::hooks::install("IDirectInputDevice" #device_interface_version #encoding "::GetDeviceState", reshade::hooks::vtable_from_instance(device), 9, &IDirectInputDevice##device_interface_version##encoding##_GetDeviceState); \
+				reshade::hooks::install("IDirectInputDevice" #device_interface_version #encoding "::GetDeviceData", reshade::hooks::vtable_from_instance(device), 10, &IDirectInputDevice##device_interface_version##encoding##_GetDeviceData); \
+			} \
 		} \
 		else \
 		{ \
@@ -120,10 +125,15 @@ IDirectInputDevice_GetDeviceData_Impl(10, 7, W)
 			\
 			DIDEVCAPS caps = { sizeof(caps) }; \
 			device->GetCapabilities(&caps); \
-			g_dinput_device_type.emplace(device, GET_DIDEVICE_TYPE(caps.dwDevType)); \
 			\
-			reshade::hooks::install("IDirectInputDevice" #device_interface_version #encoding "::GetDeviceState", reshade::hooks::vtable_from_instance(device), 9, &IDirectInputDevice##device_interface_version##encoding##_GetDeviceState); \
-			reshade::hooks::install("IDirectInputDevice" #device_interface_version #encoding "::GetDeviceData", reshade::hooks::vtable_from_instance(device), 10, &IDirectInputDevice##device_interface_version##encoding##_GetDeviceData); \
+			const BYTE device_type = GET_DIDEVICE_TYPE(caps.dwDevType); \
+			g_dinput_device_type.emplace(device, device_type); \
+			\
+			if (device_type == DIDEVTYPE_MOUSE || device_type == DIDEVTYPE_KEYBOARD) \
+			{ \
+				reshade::hooks::install("IDirectInputDevice" #device_interface_version #encoding "::GetDeviceState", reshade::hooks::vtable_from_instance(device), 9, &IDirectInputDevice##device_interface_version##encoding##_GetDeviceState); \
+				reshade::hooks::install("IDirectInputDevice" #device_interface_version #encoding "::GetDeviceData", reshade::hooks::vtable_from_instance(device), 10, &IDirectInputDevice##device_interface_version##encoding##_GetDeviceData); \
+			} \
 		} \
 		else \
 		{ \
