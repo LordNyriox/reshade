@@ -2,8 +2,8 @@ name: build
 
 on:
   push:
-#    branches:
-#      - main
+    branches:
+      - 6.7.x
   pull_request:
     branches:
       - main
