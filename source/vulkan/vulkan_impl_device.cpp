@@ -96,24 +96,6 @@ reshade::vulkan::device_impl::device_impl(
 		}
 	}
 
-#if VK_KHR_push_descriptor
-	if (!vk.KHR_push_descriptor)
-#endif
-	{
-		for (uint32_t i = 0; i < 4; ++i)
-		{
-			VkDescriptorPoolCreateInfo create_info { VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
-			create_info.maxSets = 32;
-			create_info.poolSizeCount = static_cast<uint32_t>(std::size(pool_sizes));
-			create_info.pPoolSizes = pool_sizes;
-
-			if (vk.CreateDescriptorPool(_orig, &create_info, nullptr, &_transient_descriptor_pool[i]) != VK_SUCCESS)
-			{
-				log::message(log::level::error, "Failed to create transient descriptor pool!");
-			}
-		}
-	}
-
 	{	VkPrivateDataSlotCreateInfo create_info { VK_STRUCTURE_TYPE_PRIVATE_DATA_SLOT_CREATE_INFO };
 
 		if (vk.CreatePrivateDataSlot(_orig, &create_info, nullptr, &_private_data_slot) != VK_SUCCESS)
@@ -135,8 +117,6 @@ reshade::vulkan::device_impl::~device_impl()
 	vk.DestroyPrivateDataSlot(_orig, _private_data_slot, nullptr);
 
 	vk.DestroyDescriptorPool(_orig, _descriptor_pool, nullptr);
-	for (uint32_t i = 0; i < 4; ++i)
-		vk.DestroyDescriptorPool(_orig, _transient_descriptor_pool[i], nullptr);
 
 	vmaDestroyAllocator(_alloc);
 }
@@ -2651,18 +2631,6 @@ bool reshade::vulkan::device_impl::get_pipeline_shader_group_handles(api::pipeli
 #else
 	return false;
 #endif
-}
-
-void reshade::vulkan::device_impl::advance_transient_descriptor_pool()
-{
-#if VK_KHR_push_descriptor
-	if (vk.KHR_push_descriptor)
-		return;
-#endif
-
-	// This assumes that no other thread is currently allocating from the transient descriptor pool
-	const VkDescriptorPool next_pool = _transient_descriptor_pool[++_transient_index % 4];
-	vk.ResetDescriptorPool(_orig, next_pool, 0);
 }
 
 reshade::vulkan::command_list_immediate_impl *reshade::vulkan::device_impl::get_immediate_command_list()

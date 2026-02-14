@@ -812,6 +812,15 @@ void reshade::d3d11::device_context_impl::update_buffer_region(const void *data,
 {
 	assert(dest != 0);
 
+	if (UINT64_MAX == size)
+	{
+		D3D11_BUFFER_DESC desc;
+		reinterpret_cast<ID3D11Buffer *>(dest.handle)->GetDesc(&desc);
+		size = desc.ByteWidth;
+	}
+
+	assert(dest_offset <= std::numeric_limits<UINT>::max() && size <= std::numeric_limits<UINT>::max());
+
 	const D3D11_BOX box = { static_cast<UINT>(dest_offset), 0, 0, static_cast<UINT>(dest_offset + size), 1, 1 };
 
 	_orig->UpdateSubresource(reinterpret_cast<ID3D11Resource *>(dest.handle), 0, dest_offset != 0 ? &box : nullptr, data, static_cast<UINT>(size), 0);

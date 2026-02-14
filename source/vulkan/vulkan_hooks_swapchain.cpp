@@ -470,7 +470,7 @@ VkResult VKAPI_CALL vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPr
 	VkPresentInfoKHR present_info = *pPresentInfo;
 
 	reshade::vulkan::device_impl *const device_impl = g_vulkan_devices.at(dispatch_key_from_handle(queue));
-	reshade::vulkan::command_queue_impl *const queue_impl = device_impl->get_private_data_for_object<VK_OBJECT_TYPE_QUEUE>(queue);
+	reshade::vulkan::object_data<VK_OBJECT_TYPE_QUEUE> *const queue_impl = device_impl->get_private_data_for_object<VK_OBJECT_TYPE_QUEUE>(queue);
 
 	const bool present_from_secondary_queue = device_impl->_primary_graphics_queue != nullptr && device_impl->_primary_graphics_queue != queue_impl;
 	if (present_from_secondary_queue)
@@ -568,8 +568,30 @@ VkResult VKAPI_CALL vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPr
 		// If the application is presenting with a different queue than rendering, synchronize these two queues
 		if (present_from_secondary_queue)
 		{
-			queue_impl->wait_and_signal(submit_info);
+			if (const auto present_config = find_in_structure_chain<VkBaseInStructure>(
+					pPresentInfo, static_cast<VkStructureType>(1000613000) /* VK_STRUCTURE_TYPE_SET_PRESENT_CONFIG_NV */))
+			{
+				assert(queue_impl->present_batch <= 1);
+				queue_impl->present_batch = *reinterpret_cast<const uint32_t *>(present_config + 1);
+			}
+			else if (queue_impl->present_batch > 1)
+			{
+				queue_impl->present_batch--;
 
+				if (submit_info.waitSemaphoreCount != 0)
+				{
+					// RTX Remix calls present with the same semaphores to wait on for all generated frames, which will already be signaled by the first present in the batch
+					// Signal them on the present queue again, so that the graphics queue waits for the generated frames too
+					submit_info.signalSemaphoreCount = submit_info.waitSemaphoreCount;
+					submit_info.pSignalSemaphores = submit_info.pWaitSemaphores;
+					device_impl->_dispatch_table.QueueSubmit(queue, 1, &submit_info, VK_NULL_HANDLE);
+					submit_info.signalSemaphoreCount = 0;
+					submit_info.pSignalSemaphores = nullptr;
+				}
+			}
+
+			// This can deadlock on the GPU if the application submitted a semaphore wait to the graphics queue before this call, for which it submits the corresponding signal to the present queue only after this call
+			// E.g. happens with DLSS Frame Generation
 			device_impl->_primary_graphics_queue->flush_immediate_command_list(submit_info);
 		}
 
@@ -577,8 +599,6 @@ VkResult VKAPI_CALL vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPr
 		present_info.waitSemaphoreCount = submit_info.waitSemaphoreCount;
 		present_info.pWaitSemaphores = submit_info.pWaitSemaphores;
 	}
-
-	device_impl->advance_transient_descriptor_pool();
 
 	RESHADE_VULKAN_GET_DEVICE_DISPATCH_PTR(QueuePresentKHR, device_impl);
 	assert(!g_in_dxgi_runtime);

@@ -4849,8 +4849,7 @@ void reshade::runtime::render_imgui_draw_data(api::command_list *cmd_list, ImDra
 			const auto imgui_srv = api::resource_view { texture_data->GetTexID() };
 			const auto imgui_tex = _device->get_resource_from_view(imgui_srv);
 
-			_graphics_queue->get_immediate_command_list()->barrier(imgui_tex, api::resource_usage::shader_resource, api::resource_usage::copy_dest);
-			_graphics_queue->wait_idle();
+			cmd_list->barrier(imgui_tex, api::resource_usage::shader_resource, api::resource_usage::copy_dest);
 			for (const ImTextureRect &update_rect : texture_data->Updates)
 			{
 				api::subresource_box box;
@@ -4861,13 +4860,13 @@ void reshade::runtime::render_imgui_draw_data(api::command_list *cmd_list, ImDra
 				box.bottom = update_rect.y + update_rect.h;
 				box.back = 1;
 
-				_device->update_texture_region(
+				cmd_list->update_texture_region(
 					api::subresource_data { texture_data->GetPixelsAt(update_rect.x, update_rect.y), static_cast<uint32_t>(texture_data->GetPitch()), static_cast<uint32_t>(texture_data->GetSizeInBytes()) },
 					imgui_tex,
 					0,
 					&box);
 			}
-			_graphics_queue->get_immediate_command_list()->barrier(imgui_tex, api::resource_usage::copy_dest, api::resource_usage::shader_resource);
+			cmd_list->barrier(imgui_tex, api::resource_usage::copy_dest, api::resource_usage::shader_resource);
 
 			texture_data->SetStatus(ImTextureStatus_OK);
 			continue;

@@ -750,7 +750,9 @@ VkResult VKAPI_CALL vkCreateDevice(VkPhysicalDevice physicalDevice, const VkDevi
 			reshade::invoke_addon_event<reshade::addon_event::init_command_queue>(queue_impl);
 #endif
 
-			if (queue_create_info.queueFamilyIndex == graphics_queue_family_index && queue_index == 0)
+			if (queue_create_info.queueFamilyIndex == graphics_queue_family_index &&
+				// The last queue is most likely the one used by DLSS Frame Generation, so prefer it to avoid queue synchronization issues
+				queue_index == (queue_create_info.queueCount - 1))
 			{
 				device_impl->_primary_graphics_queue = queue_impl;
 				device_impl->_primary_graphics_queue_family_index = graphics_queue_family_index;

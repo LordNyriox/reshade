@@ -105,6 +105,19 @@ void reshade::d3d12::command_list_immediate_impl::query_acceleration_structures(
 	}
 }
 
+void reshade::d3d12::command_list_immediate_impl::update_buffer_region(const void *data, api::resource dest, uint64_t dest_offset, uint64_t size)
+{
+	s_last_immediate_command_list = this;
+
+	_device_impl->update_buffer_region(data, dest, dest_offset, size);
+}
+void reshade::d3d12::command_list_immediate_impl::update_texture_region(const api::subresource_data &data, api::resource dest, uint32_t dest_subresource, const api::subresource_box *dest_box)
+{
+	s_last_immediate_command_list = this;
+
+	_device_impl->update_texture_region(data, dest, dest_subresource, dest_box);
+}
+
 bool reshade::d3d12::command_list_immediate_impl::flush()
 {
 	s_last_immediate_command_list = this;

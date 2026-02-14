@@ -493,6 +493,11 @@ void reshade::vulkan::command_list_impl::push_descriptors(api::shader_stage stag
 
 	assert(update.table == 0);
 
+#if VK_KHR_push_descriptor
+	if (!vk.KHR_push_descriptor)
+		return;
+#endif
+
 	VkWriteDescriptorSet write { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
 	write.dstBinding = update.binding;
 	write.dstArrayElement = update.array_offset;
@@ -543,59 +548,31 @@ void reshade::vulkan::command_list_impl::push_descriptors(api::shader_stage stag
 		break;
 	}
 
-#if VK_KHR_push_descriptor
-	if (vk.KHR_push_descriptor)
+	if ((stages & api::shader_stage::all_compute) != 0)
 	{
-		if ((stages & api::shader_stage::all_compute) != 0)
-		{
-			vk.CmdPushDescriptorSet(_orig,
-				VK_PIPELINE_BIND_POINT_COMPUTE,
-				(VkPipelineLayout)layout.handle, layout_param,
-				1, &write);
-		}
-		if ((stages & api::shader_stage::all_graphics) != 0)
-		{
-			vk.CmdPushDescriptorSet(_orig,
-				VK_PIPELINE_BIND_POINT_GRAPHICS,
-				(VkPipelineLayout)layout.handle, layout_param,
-				1, &write);
-		}
-		if ((stages & api::shader_stage::all_ray_tracing) != 0)
-		{
+		vk.CmdPushDescriptorSet(_orig,
+			VK_PIPELINE_BIND_POINT_COMPUTE,
+			(VkPipelineLayout)layout.handle, layout_param,
+			1, &write);
+	}
+	if ((stages & api::shader_stage::all_graphics) != 0)
+	{
+		vk.CmdPushDescriptorSet(_orig,
+			VK_PIPELINE_BIND_POINT_GRAPHICS,
+			(VkPipelineLayout)layout.handle, layout_param,
+			1, &write);
+	}
+	if ((stages & api::shader_stage::all_ray_tracing) != 0)
+	{
 #if VK_KHR_ray_tracing_pipeline
-			vk.CmdPushDescriptorSet(_orig,
-				VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR,
-				(VkPipelineLayout)layout.handle, layout_param,
-				1, &write);
+		vk.CmdPushDescriptorSet(_orig,
+			VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR,
+			(VkPipelineLayout)layout.handle, layout_param,
+			1, &write);
 #else
-			assert(false);
+		assert(false);
 #endif
-		}
-		return;
 	}
-#endif
-
-	assert(update.binding == 0 && update.array_offset == 0);
-
-	const VkPipelineLayout pipeline_layout = (VkPipelineLayout)layout.handle;
-	const VkDescriptorSetLayout set_layout = (VkDescriptorSetLayout)_device_impl->get_private_data_for_object<VK_OBJECT_TYPE_PIPELINE_LAYOUT>(pipeline_layout)->set_layouts[layout_param];
-
-	VkDescriptorSetAllocateInfo alloc_info { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
-	alloc_info.descriptorPool = _device_impl->_transient_descriptor_pool[_device_impl->_transient_index % 4];
-	alloc_info.descriptorSetCount = 1;
-	alloc_info.pSetLayouts = &set_layout;
-
-	// Access to descriptor pools must be externally synchronized, so lock for the duration of allocation from the transient descriptor pool
-	if (const std::unique_lock<std::shared_mutex> lock(_device_impl->_mutex);
-		vk.AllocateDescriptorSets(_device_impl->_orig, &alloc_info, &write.dstSet) != VK_SUCCESS)
-	{
-		log::message(log::level::error, "Failed to allocate %u transient descriptor handle(s) of type %u!", static_cast<unsigned int>(update.type), update.count);
-		return;
-	}
-
-	vk.UpdateDescriptorSets(_device_impl->_orig, 1, &write, 0, nullptr);
-
-	bind_descriptor_tables(stages, layout, layout_param, 1, reinterpret_cast<const api::descriptor_table *>(&write.dstSet));
 }
 void reshade::vulkan::command_list_impl::bind_descriptor_tables(api::shader_stage stages, api::pipeline_layout layout, uint32_t first, uint32_t count, const api::descriptor_table *tables)
 {
@@ -1468,6 +1445,9 @@ void reshade::vulkan::command_list_impl::query_acceleration_structures(uint32_t 
 
 void reshade::vulkan::command_list_impl::update_buffer_region(const void *data, api::resource dest, uint64_t dest_offset, uint64_t size)
 {
+	if (UINT64_MAX == size)
+		size = _device_impl->get_private_data_for_object<VK_OBJECT_TYPE_BUFFER>((VkBuffer)dest.handle)->create_info.size;
+
 	_has_commands = true;
 
 	vk.CmdUpdateBuffer(_orig, (VkBuffer)dest.handle, dest_offset, size, data);

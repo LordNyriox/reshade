@@ -105,8 +105,6 @@ namespace reshade::vulkan
 
 		bool get_pipeline_shader_group_handles(api::pipeline pipeline, uint32_t first, uint32_t count, void *out_handles) final;
 
-		void advance_transient_descriptor_pool();
-
 		command_list_immediate_impl *get_immediate_command_list();
 
 		template <VkObjectType type>
@@ -162,8 +160,6 @@ namespace reshade::vulkan
 
 		VmaAllocator _alloc = nullptr;
 		VkDescriptorPool _descriptor_pool = VK_NULL_HANDLE;
-		VkDescriptorPool _transient_descriptor_pool[4] = {};
-		uint32_t _transient_index = 0;
 
 		VkPrivateDataSlot _private_data_slot = VK_NULL_HANDLE;
 
