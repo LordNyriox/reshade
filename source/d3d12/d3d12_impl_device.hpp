@@ -50,6 +50,7 @@ namespace reshade::d3d12
 		api::resource get_resource_from_view(api::resource_view view) const final;
 		api::resource_view_desc get_resource_view_desc(api::resource_view view) const final;
 
+		uint64_t get_resource_gpu_address(api::resource resource) const;
 		uint64_t get_resource_view_gpu_address(api::resource_view view) const final;
 
 		bool map_buffer_region(api::resource resource, uint64_t offset, uint64_t size, api::map_access access, void **out_data) final;

@@ -61,6 +61,7 @@ namespace reshade::vulkan
 		api::resource get_resource_from_view(api::resource_view view) const final;
 		api::resource_view_desc get_resource_view_desc(api::resource_view view) const final;
 
+		uint64_t get_resource_gpu_address(api::resource resource) const;
 		uint64_t get_resource_view_gpu_address(api::resource_view view) const final;
 
 		bool map_buffer_region(api::resource resource, uint64_t offset, uint64_t size, api::map_access access, void **out_data) final;
@@ -148,9 +149,9 @@ namespace reshade::vulkan
 		}
 
 		const VkPhysicalDevice _physical_device;
+		std::vector<command_queue_impl *> _queues;
 		command_queue_impl *_primary_graphics_queue = nullptr;
 		uint32_t _primary_graphics_queue_family_index = std::numeric_limits<uint32_t>::max();
-		std::vector<command_queue_impl *> _queues;
 
 		const GladVulkanContext _dispatch_table;
 		const VkPhysicalDeviceFeatures _enabled_features;
@@ -160,7 +161,6 @@ namespace reshade::vulkan
 
 		VmaAllocator _alloc = nullptr;
 		VkDescriptorPool _descriptor_pool = VK_NULL_HANDLE;
-
 		VkPrivateDataSlot _private_data_slot = VK_NULL_HANDLE;
 
 		std::shared_mutex _mutex;

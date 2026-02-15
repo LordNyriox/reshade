@@ -34,10 +34,11 @@ VkResult VKAPI_CALL vkCreateSwapchainKHR(VkDevice device, const VkSwapchainCreat
 
 	assert(pCreateInfo != nullptr && pSwapchain != nullptr);
 
-	std::vector<VkFormat> format_list;
-	std::vector<uint32_t> queue_family_list;
 	VkSwapchainCreateInfoKHR create_info = *pCreateInfo;
+
+	std::vector<VkFormat> format_list;
 	VkImageFormatListCreateInfo format_list_info;
+	std::vector<uint32_t> queue_family_list;
 
 	// Only have to enable additional features if there is a graphics queue, since ReShade will not run otherwise
 	if (device_impl->_primary_graphics_queue != nullptr)
@@ -45,31 +46,28 @@ VkResult VKAPI_CALL vkCreateSwapchainKHR(VkDevice device, const VkSwapchainCreat
 		// Add required usage flags to create info
 		create_info.imageUsage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
 
-		// Add required format variants, so e.g. both linear and sRGB views can be created for the swap chain images
-		format_list.push_back(reshade::vulkan::convert_format(
-			reshade::api::format_to_default_typed(reshade::vulkan::convert_format(create_info.imageFormat), 0)));
-		format_list.push_back(reshade::vulkan::convert_format(
-			reshade::api::format_to_default_typed(reshade::vulkan::convert_format(create_info.imageFormat), 1)));
-
 #if VK_KHR_swapchain_mutable_format
+		// Add required format variants, so e.g. both linear and sRGB views can be created for the swap chain images
+		format_list.push_back(reshade::vulkan::convert_format(reshade::api::format_to_default_typed(reshade::vulkan::convert_format(create_info.imageFormat), 0)));
+		format_list.push_back(reshade::vulkan::convert_format(reshade::api::format_to_default_typed(reshade::vulkan::convert_format(create_info.imageFormat), 1)));
+
 		// Only have to make format mutable if they are actually different
 		if (format_list[0] != format_list[1])
 			create_info.flags |= VK_SWAPCHAIN_CREATE_MUTABLE_FORMAT_BIT_KHR;
 
 		// Patch the format list in the create info of the application
-		if (const auto format_list_info2 = find_in_structure_chain<VkImageFormatListCreateInfo>(
+		if (const auto existing_format_list_info = find_in_structure_chain<VkImageFormatListCreateInfo>(
 				pCreateInfo->pNext, VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO))
 		{
-			format_list.insert(format_list.end(),
-				format_list_info2->pViewFormats, format_list_info2->pViewFormats + format_list_info2->viewFormatCount);
+			format_list.insert(format_list.end(), existing_format_list_info->pViewFormats, existing_format_list_info->pViewFormats + existing_format_list_info->viewFormatCount);
 
 			// Remove duplicates from the list (since the new formats may have already been added by the application)
 			std::sort(format_list.begin(), format_list.end());
 			format_list.erase(std::unique(format_list.begin(), format_list.end()), format_list.end());
 
 			// This is evil, because writing into application memory, but eh =)
-			const_cast<VkImageFormatListCreateInfo *>(format_list_info2)->viewFormatCount = static_cast<uint32_t>(format_list.size());
-			const_cast<VkImageFormatListCreateInfo *>(format_list_info2)->pViewFormats = format_list.data();
+			const_cast<VkImageFormatListCreateInfo *>(existing_format_list_info)->viewFormatCount = static_cast<uint32_t>(format_list.size());
+			const_cast<VkImageFormatListCreateInfo *>(existing_format_list_info)->pViewFormats = format_list.data();
 		}
 		else if (format_list[0] != format_list[1])
 		{
@@ -563,7 +561,7 @@ VkResult VKAPI_CALL vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPr
 		submit_info.pWaitSemaphores = present_info.pWaitSemaphores;
 		submit_info.pWaitDstStageMask = wait_stages.p;
 
-		queue_impl->flush_immediate_command_list(submit_info);
+		queue_impl->flush_immediate_command_list(&submit_info);
 
 		// If the application is presenting with a different queue than rendering, synchronize these two queues
 		if (present_from_secondary_queue)
@@ -592,7 +590,7 @@ VkResult VKAPI_CALL vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPr
 
 			// This can deadlock on the GPU if the application submitted a semaphore wait to the graphics queue before this call, for which it submits the corresponding signal to the present queue only after this call
 			// E.g. happens with DLSS Frame Generation
-			device_impl->_primary_graphics_queue->flush_immediate_command_list(submit_info);
+			device_impl->_primary_graphics_queue->flush_immediate_command_list(&submit_info);
 		}
 
 		// Override wait semaphores based on the last queue submit

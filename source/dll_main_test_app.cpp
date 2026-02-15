@@ -742,28 +742,21 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR lpCmdLine, int nCmdShow
 		}
 
 		const auto resize_swapchain = [&](VkSwapchainKHR old_swapchain = VK_NULL_HANDLE) {
-			uint32_t num_present_modes = 0, num_surface_formats = 0;
-			vk.GetPhysicalDeviceSurfaceFormatsKHR(physical_device, surface, &num_surface_formats, nullptr);
-			vk.GetPhysicalDeviceSurfacePresentModesKHR(physical_device, surface, &num_present_modes, nullptr);
-			std::vector<VkPresentModeKHR> present_modes(num_present_modes);
-			std::vector<VkSurfaceFormatKHR> surface_formats(num_surface_formats);
-			vk.GetPhysicalDeviceSurfaceFormatsKHR(physical_device, surface, &num_surface_formats, surface_formats.data());
-			vk.GetPhysicalDeviceSurfacePresentModesKHR(physical_device, surface, &num_present_modes, present_modes.data());
 			VkSurfaceCapabilitiesKHR capabilities = {};
 			vk.GetPhysicalDeviceSurfaceCapabilitiesKHR(physical_device, surface, &capabilities);
 
 			VkSwapchainCreateInfoKHR create_info { VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR };
 			create_info.surface = surface;
 			create_info.minImageCount = 3;
-			create_info.imageFormat = surface_formats[0].format;
-			create_info.imageColorSpace = surface_formats[0].colorSpace;
+			create_info.imageFormat = VK_FORMAT_R8G8B8A8_UNORM;
+			create_info.imageColorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
 			create_info.imageExtent = capabilities.currentExtent;
 			create_info.imageArrayLayers = 1;
 			create_info.imageUsage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
 			create_info.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
 			create_info.preTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
 			create_info.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
-			create_info.presentMode = present_modes[0];
+			create_info.presentMode = VK_PRESENT_MODE_FIFO_KHR;
 			create_info.clipped = VK_TRUE;
 			create_info.oldSwapchain = old_swapchain;
 
@@ -825,13 +818,14 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR lpCmdLine, int nCmdShow
 
 		resize_swapchain();
 
-		uint32_t sem_index = 0;
-		std::vector<VkSemaphore> cmd_semaphores(4);
-		std::vector<VkSemaphore> acquire_semaphores(4);
+		size_t sem_index = 0;
+		VkSemaphore cmd_semaphores[8] = {}; // The size should match 'reshade::vulkan::command_list_immediate_impl::NUM_COMMAND_FRAMES'
+		VkSemaphore acquire_semaphores[8] = {};
 
-		for (size_t i = 0; i < cmd_semaphores.size(); ++i)
+		for (size_t i = 0; i < 8; ++i)
 		{
 			VkSemaphoreCreateInfo create_info { VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
+
 			VK_CHECK(vk.CreateSemaphore(device, &create_info, nullptr, &cmd_semaphores[i]));
 			VK_CHECK(vk.CreateSemaphore(device, &create_info, nullptr, &acquire_semaphores[i]));
 		}
@@ -851,15 +845,16 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR lpCmdLine, int nCmdShow
 			}
 
 			uint32_t swapchain_image_index = 0;
-			sem_index = (sem_index + 1) % cmd_semaphores.size();
+			sem_index = (sem_index + 1) % std::size(cmd_semaphores);
 
 			VkResult present_res = vk.AcquireNextImageKHR(device, swapchain, UINT64_MAX, acquire_semaphores[sem_index], VK_NULL_HANDLE, &swapchain_image_index);
 			if (present_res == VK_SUCCESS)
 			{
+				const VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+
 				VkSubmitInfo submit_info { VK_STRUCTURE_TYPE_SUBMIT_INFO };
 				submit_info.waitSemaphoreCount = 1;
 				submit_info.pWaitSemaphores = &acquire_semaphores[sem_index];
-				const VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
 				submit_info.pWaitDstStageMask = &wait_stage;
 				submit_info.commandBufferCount = 1;
 				submit_info.pCommandBuffers = &cmd_buffers[swapchain_image_index];
@@ -886,11 +881,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR lpCmdLine, int nCmdShow
 		// Wait for all GPU work to finish before destroying objects
 		vk.DeviceWaitIdle(device);
 
-		for (size_t i = 0; i < cmd_semaphores.size(); ++i)
-		{
-			vk.DestroySemaphore(device, cmd_semaphores[i], nullptr);
-			vk.DestroySemaphore(device, acquire_semaphores[i], nullptr);
-		}
+		for (VkSemaphore semaphore : cmd_semaphores)
+			vk.DestroySemaphore(device, semaphore, nullptr);
+		for (VkSemaphore semaphore : acquire_semaphores)
+			vk.DestroySemaphore(device, semaphore, nullptr);
 		vk.FreeCommandBuffers(device, cmd_alloc, static_cast<uint32_t>(cmd_buffers.size()), cmd_buffers.data());
 		vk.DestroyCommandPool(device, cmd_alloc, nullptr);
 		vk.DestroySwapchainKHR(device, swapchain, nullptr);

@@ -70,7 +70,7 @@ reshade::vulkan::command_list_immediate_impl::command_list_immediate_impl(device
 		if (!vk.KHR_push_descriptor)
 #endif
 		{
-			const VkDescriptorPoolSize pool_sizes[] = {
+			constexpr VkDescriptorPoolSize pool_sizes[] = {
 				{ VK_DESCRIPTOR_TYPE_SAMPLER, 128 },
 				{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1024 },
 				{ VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1024 },
@@ -189,8 +189,7 @@ void reshade::vulkan::command_list_immediate_impl::push_descriptors(api::shader_
 
 	assert(update.binding == 0 && update.array_offset == 0);
 
-	const VkPipelineLayout pipeline_layout = (VkPipelineLayout)layout.handle;
-	const VkDescriptorSetLayout set_layout = (VkDescriptorSetLayout)_device_impl->get_private_data_for_object<VK_OBJECT_TYPE_PIPELINE_LAYOUT>(pipeline_layout)->set_layouts[layout_param];
+	VkDescriptorSetLayout set_layout = (VkDescriptorSetLayout)_device_impl->get_private_data_for_object<VK_OBJECT_TYPE_PIPELINE_LAYOUT>((VkPipelineLayout)layout.handle)->set_layouts[layout_param];
 
 	VkDescriptorSetAllocateInfo alloc_info { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
 	alloc_info.descriptorPool = _transient_descriptor_pool[_cmd_index];
@@ -218,10 +217,16 @@ void reshade::vulkan::command_list_immediate_impl::update_texture_region(const a
 {
 	s_last_immediate_command_list = this;
 
+#if VK_EXT_host_image_copy
+	// Make sure image layout transitions have completed before doing update using host image copy
+	if (vk.EXT_host_image_copy)
+		flush(nullptr);
+#endif
+
 	_device_impl->update_texture_region(data, dest, dest_subresource, dest_box);
 }
 
-bool reshade::vulkan::command_list_immediate_impl::flush(VkSubmitInfo &semaphore_info)
+bool reshade::vulkan::command_list_immediate_impl::flush(VkSubmitInfo *wait_semaphore_info)
 {
 	s_last_immediate_command_list = this;
 
@@ -245,17 +250,21 @@ bool reshade::vulkan::command_list_immediate_impl::flush(VkSubmitInfo &semaphore
 	}
 
 	VkSubmitInfo submit_info { VK_STRUCTURE_TYPE_SUBMIT_INFO };
-	submit_info.waitSemaphoreCount = semaphore_info.waitSemaphoreCount;
-	submit_info.pWaitSemaphores = semaphore_info.pWaitSemaphores;
-	submit_info.pWaitDstStageMask = semaphore_info.pWaitDstStageMask;
 	submit_info.commandBufferCount = 1;
 	submit_info.pCommandBuffers = &_orig;
 
-	if (semaphore_info.waitSemaphoreCount != 0 ||
-		semaphore_info.signalSemaphoreCount != 0) // Handle case where this is called from 'command_queue_impl::signal'
+	if (wait_semaphore_info != nullptr)
 	{
-		submit_info.signalSemaphoreCount = 1;
-		submit_info.pSignalSemaphores = &_cmd_semaphores[_cmd_index];
+		submit_info.waitSemaphoreCount = wait_semaphore_info->waitSemaphoreCount;
+		submit_info.pWaitSemaphores = wait_semaphore_info->pWaitSemaphores;
+		submit_info.pWaitDstStageMask = wait_semaphore_info->pWaitDstStageMask;
+
+		if (wait_semaphore_info->waitSemaphoreCount != 0 ||
+			wait_semaphore_info->signalSemaphoreCount != 0) // Handle case where this is called from 'command_queue_impl::signal'
+		{
+			submit_info.signalSemaphoreCount = 1;
+			submit_info.pSignalSemaphores = &_cmd_semaphores[_cmd_index];
+		}
 	}
 
 	// Only reset fence before an actual submit which can signal it again
@@ -270,14 +279,17 @@ bool reshade::vulkan::command_list_immediate_impl::flush(VkSubmitInfo &semaphore
 		return false;
 	}
 
-	// This queue submit now waits on the requested wait semaphores
-	// The next queue submit should therefore wait on the semaphore that was signaled by this submit
-	semaphore_info.waitSemaphoreCount = submit_info.signalSemaphoreCount;
-	semaphore_info.pWaitSemaphores = submit_info.pSignalSemaphores;
-	assert(semaphore_info.pWaitDstStageMask != nullptr || semaphore_info.waitSemaphoreCount == 0);
+	if (wait_semaphore_info != nullptr)
+	{
+		// This queue submit now waits on the requested wait semaphores
+		// The next queue submit should therefore wait on the semaphore that was signaled by this submit
+		wait_semaphore_info->waitSemaphoreCount = submit_info.signalSemaphoreCount;
+		wait_semaphore_info->pWaitSemaphores = submit_info.pSignalSemaphores;
+		assert(wait_semaphore_info->pWaitDstStageMask != nullptr || wait_semaphore_info->waitSemaphoreCount == 0);
 
-	// Continue with next command buffer now that the current one was submitted
-	_cmd_index = (_cmd_index + 1) % NUM_COMMAND_FRAMES;
+		// Continue with next command buffer now that the current one was submitted
+		_cmd_index = (_cmd_index + 1) % NUM_COMMAND_FRAMES;
+	}
 
 	// Make sure the next command buffer has finished executing before reusing it this frame
 	if (vk.GetFenceStatus(_device_impl->_orig, _cmd_fences[_cmd_index]) == VK_NOT_READY)
@@ -304,19 +316,4 @@ bool reshade::vulkan::command_list_immediate_impl::flush(VkSubmitInfo &semaphore
 	// Command buffer is now in the recording state
 	_orig = _cmd_buffers[_cmd_index];
 	return true;
-}
-bool reshade::vulkan::command_list_immediate_impl::flush_and_wait()
-{
-	if (!_has_commands)
-		return true;
-
-	// Index is updated during flush below, so keep track of the current one to wait on
-	const uint32_t cmd_index_to_wait_on = _cmd_index;
-
-	VkSubmitInfo submit_info { VK_STRUCTURE_TYPE_SUBMIT_INFO };
-	if (!flush(submit_info))
-		return false;
-
-	// Wait for the submitted work to finish and reset fence again for next use
-	return vk.WaitForFences(_device_impl->_orig, 1, &_cmd_fences[cmd_index_to_wait_on], VK_TRUE, UINT64_MAX) == VK_SUCCESS;
 }

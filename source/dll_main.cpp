@@ -287,8 +287,8 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD fdwReason, LPVOID)
 
 			// Register modules to hook
 			{
-				if (std::filesystem::path export_module_path;
-					reshade::global_config().get("PROXY", "EnableProxyLibrary") &&
+				std::filesystem::path export_module_path;
+				if (reshade::global_config().get("PROXY", "EnableProxyLibrary") &&
 					reshade::global_config().get("PROXY", "ProxyLibrary", export_module_path))
 				{
 					reshade::hooks::register_export_module(g_reshade_base_path / export_module_path);
@@ -340,14 +340,14 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD fdwReason, LPVOID)
 						reshade::hooks::register_module(get_system_path() / L"d2d1.dll");
 						reshade::hooks::register_module(get_system_path() / L"d3d9.dll");
 
-						reshade::hooks::register_module(get_target_path(is_dxgi, L"d3d10.dll"));
-						reshade::hooks::register_module(get_target_path(is_dxgi, L"d3d10_1.dll"));
-						reshade::hooks::register_module(get_target_path(is_dxgi, L"d3d11.dll"));
+						reshade::hooks::register_module(get_target_path(!export_module_path.empty() && is_dxgi, L"d3d10.dll"));
+						reshade::hooks::register_module(get_target_path(!export_module_path.empty() && is_dxgi, L"d3d10_1.dll"));
+						reshade::hooks::register_module(get_target_path(!export_module_path.empty() && is_dxgi, L"d3d11.dll"));
 
 						// On Windows 7 the d3d12on7 module is not in the system path, so register to hook any d3d12.dll loaded instead
-						reshade::hooks::register_module(get_target_path(is_windows7() && _wcsicmp(module_name.c_str(), L"d3d12") != 0 || is_dxgi, L"d3d12.dll"));
+						reshade::hooks::register_module(get_target_path(is_windows7() && _wcsicmp(module_name.c_str(), L"d3d12") != 0 || (!export_module_path.empty() && is_dxgi), L"d3d12.dll"));
 
-						reshade::hooks::register_module(get_target_path(is_d3d && !is_dxgi, L"dxgi.dll"));
+						reshade::hooks::register_module(get_target_path(!export_module_path.empty() && is_d3d && !is_dxgi, L"dxgi.dll"));
 					}
 
 					// Only register OpenGL hooks when module is not called any D3D module name

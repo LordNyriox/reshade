@@ -415,7 +415,7 @@ bool reshade::d3d12::device_impl::create_resource(const api::resource_desc &desc
 				const api::resource_usage states_finalize[2] = { api::resource_usage::copy_dest, initial_state };
 				immediate_command_list->barrier(1, out_resource, &states_finalize[0], &states_finalize[1]);
 
-				immediate_command_list->flush();
+				immediate_command_list->flush(true);
 			}
 		}
 
@@ -543,7 +543,7 @@ bool reshade::d3d12::device_impl::create_resource_view(api::resource resource, a
 			if (resource == 0)
 				break;
 
-			const D3D12_GPU_VIRTUAL_ADDRESS address = reinterpret_cast<ID3D12Resource *>(resource.handle)->GetGPUVirtualAddress() +
+			const D3D12_GPU_VIRTUAL_ADDRESS address = get_resource_gpu_address(resource) +
 				(desc.type == api::resource_view_type::buffer || desc.type == api::resource_view_type::acceleration_structure ? desc.buffer.offset : 0);
 
 			register_resource_view(
@@ -598,6 +598,13 @@ reshade::api::resource_view_desc reshade::d3d12::device_impl::get_resource_view_
 		return assert(false), api::resource_view_desc();
 }
 
+uint64_t reshade::d3d12::device_impl::get_resource_gpu_address(api::resource resource) const
+{
+	if (resource == 0)
+		return 0;
+
+	return reinterpret_cast<ID3D12Resource *>(resource.handle)->GetGPUVirtualAddress();
+}
 uint64_t reshade::d3d12::device_impl::get_resource_view_gpu_address(api::resource_view view) const
 {
 	D3D12_CPU_DESCRIPTOR_HANDLE descriptor_handle = { static_cast<SIZE_T>(view.handle) };
@@ -743,7 +750,7 @@ void reshade::d3d12::device_impl::update_buffer_region(const void *data, api::re
 	immediate_command_list->copy_buffer_region(api::resource { reinterpret_cast<uintptr_t>(intermediate.get()) }, 0, resource, offset, size);
 
 	// Wait for command to finish executing before destroying the upload buffer
-	immediate_command_list->flush_and_wait();
+	immediate_command_list->flush(true);
 }
 void reshade::d3d12::device_impl::update_texture_region(const api::subresource_data &data, api::resource resource, uint32_t subresource, const api::subresource_box *box)
 {
@@ -834,7 +841,7 @@ void reshade::d3d12::device_impl::update_texture_region(const api::subresource_d
 	immediate_command_list->copy_buffer_to_texture(api::resource { reinterpret_cast<uintptr_t>(intermediate.get()) }, 0, 0, 0, resource, subresource, box);
 
 	// Wait for command to finish executing before destroying the upload buffer
-	immediate_command_list->flush_and_wait();
+	immediate_command_list->flush(true);
 }
 
 bool reshade::d3d12::device_impl::create_pipeline(api::pipeline_layout layout, uint32_t subobject_count, const api::pipeline_subobject *subobjects, api::pipeline *out_pipeline)
@@ -1765,7 +1772,7 @@ void reshade::d3d12::device_impl::update_descriptor_tables(uint32_t count, const
 				const auto &view_range = static_cast<const api::buffer_range *>(update.descriptors)[k];
 
 				D3D12_CONSTANT_BUFFER_VIEW_DESC view_desc;
-				view_desc.BufferLocation = reinterpret_cast<ID3D12Resource *>(view_range.buffer.handle)->GetGPUVirtualAddress() + view_range.offset;
+				view_desc.BufferLocation = get_resource_gpu_address(view_range.buffer) + view_range.offset;
 				view_desc.SizeInBytes = static_cast<UINT>(view_range.size == UINT64_MAX ? reinterpret_cast<ID3D12Resource *>(view_range.buffer.handle)->GetDesc().Width - view_range.offset : view_range.size);
 
 				_orig->CreateConstantBufferView(&view_desc, dst_range_start);
@@ -2047,7 +2054,7 @@ void reshade::d3d12::device_impl::get_acceleration_structure_size(api::accelerat
 
 			desc.NumDescs = inputs->instances.count;
 			desc.DescsLayout = inputs->instances.array_of_pointers ? D3D12_ELEMENTS_LAYOUT_ARRAY_OF_POINTERS : D3D12_ELEMENTS_LAYOUT_ARRAY;
-			desc.InstanceDescs = (inputs->instances.buffer != 0 ? reinterpret_cast<ID3D12Resource *>(inputs->instances.buffer.handle)->GetGPUVirtualAddress() : 0) + inputs->instances.offset;
+			desc.InstanceDescs = get_resource_gpu_address(inputs->instances.buffer) + inputs->instances.offset;
 		}
 		else
 		{
@@ -2118,15 +2125,16 @@ void reshade::d3d12::device_impl::register_resource(ID3D12Resource *resource, [[
 	if (const D3D12_RESOURCE_DESC desc = resource->GetDesc();
 		desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER)
 	{
-		if (const D3D12_GPU_VIRTUAL_ADDRESS address = resource->GetGPUVirtualAddress())
-		{
-			const std::unique_lock<std::shared_mutex> lock(_resource_mutex);
+		const D3D12_GPU_VIRTUAL_ADDRESS start_address = resource->GetGPUVirtualAddress();
+		if (start_address == 0)
+			return;
 
-			// Placed resources may overwrite old resources
-			_buffer_gpu_addresses.insert_or_assign(
-				address,
-				std::tuple<UINT64, ID3D12Resource *, bool >({ desc.Width, resource, acceleration_structure }));
-		}
+		const std::unique_lock<std::shared_mutex> lock(_resource_mutex);
+
+		// Placed resources may overwrite old resources
+		_buffer_gpu_addresses.insert_or_assign(
+			start_address,
+			std::tuple<UINT64, ID3D12Resource *, bool >({ desc.Width, resource, acceleration_structure }));
 	}
 #endif
 }
@@ -2183,7 +2191,7 @@ void reshade::d3d12::device_impl::register_resource_view(D3D12_CPU_DESCRIPTOR_HA
 
 reshade::d3d12::command_list_immediate_impl *reshade::d3d12::device_impl::get_immediate_command_list()
 {
-	// Choosing the right queue is a delicate situation, since it is possible to deadlock when choosing a queue (and using 'flush_and_wait') that is waiting on a fence yet to be signaled by the current thread
+	// Choosing the right queue is a delicate situation, since it is possible to deadlock when choosing a queue (and using 'flush') that is waiting on a fence yet to be signaled by the current thread
 	// Alternatively could create a dedicated queue just for ReShade ...
 	// For now, prefer the last immediate command list used on this thread, as that is less likely to wait on another thread to signal
 	const auto last_immediate_command_list = command_list_immediate_impl::s_last_immediate_command_list;

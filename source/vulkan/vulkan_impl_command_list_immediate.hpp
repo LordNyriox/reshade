@@ -24,8 +24,7 @@ namespace reshade::vulkan
 		void update_buffer_region(const void *data, api::resource dest, uint64_t dest_offset, uint64_t size) final;
 		void update_texture_region(const api::subresource_data &data, api::resource dest, uint32_t dest_subresource, const api::subresource_box *dest_box) final;
 
-		bool flush(VkSubmitInfo &semaphore_info);
-		bool flush_and_wait();
+		bool flush(VkSubmitInfo *wait_semaphore_info);
 
 	private:
 		const VkQueue _parent_queue;

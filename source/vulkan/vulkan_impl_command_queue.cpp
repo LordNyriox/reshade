@@ -64,10 +64,11 @@ void reshade::vulkan::command_queue_impl::wait_idle() const
 
 void reshade::vulkan::command_queue_impl::flush_immediate_command_list() const
 {
+	// Flush, but do not wait
 	VkSubmitInfo empty_semaphore_info { VK_STRUCTURE_TYPE_SUBMIT_INFO };
-	flush_immediate_command_list(empty_semaphore_info);
+	flush_immediate_command_list(&empty_semaphore_info);
 }
-void reshade::vulkan::command_queue_impl::flush_immediate_command_list(VkSubmitInfo &semaphore_info) const
+void reshade::vulkan::command_queue_impl::flush_immediate_command_list(VkSubmitInfo *semaphore_info) const
 {
 	if (_immediate_cmd_list != nullptr)
 		_immediate_cmd_list->flush(semaphore_info);
@@ -160,7 +161,7 @@ bool reshade::vulkan::command_queue_impl::signal(api::fence fence, uint64_t valu
 	submit_info.signalSemaphoreCount = 1;
 	submit_info.pSignalSemaphores = &signal_semaphore;
 
-	flush_immediate_command_list(submit_info);
+	flush_immediate_command_list(&submit_info);
 
 	return vk.QueueSubmit(_orig, 1, &submit_info, VK_NULL_HANDLE) == VK_SUCCESS;
 }

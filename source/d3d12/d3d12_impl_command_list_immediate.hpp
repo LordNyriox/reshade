@@ -25,8 +25,7 @@ namespace reshade::d3d12
 		void update_buffer_region(const void *data, api::resource dest, uint64_t dest_offset, uint64_t size) final;
 		void update_texture_region(const api::subresource_data &data, api::resource dest, uint32_t dest_subresource, const api::subresource_box *dest_box) final;
 
-		bool flush();
-		bool flush_and_wait();
+		bool flush(bool wait);
 
 	private:
 		ID3D12CommandQueue *const _parent_queue;
