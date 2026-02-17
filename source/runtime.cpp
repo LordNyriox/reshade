@@ -4184,13 +4184,13 @@ void reshade::runtime::render_technique(technique &tech, api::command_list *cmd_
 			cmd_list->end_query(effect.query_heap, api::query_type::timestamp, query_base_index + static_cast<uint32_t>((1 + pass_index) * 2) + 1);
 #endif
 
-		// Generate mipmaps for modified resources
-		for (const api::resource_view modified_texture : pass.generate_mipmap_views)
-			cmd_list->generate_mipmaps(modified_texture);
-
 #ifndef NDEBUG
 		cmd_list->end_debug_event();
 #endif
+
+		// Generate mipmaps for modified resources
+		for (const api::resource_view modified_texture : pass.generate_mipmap_views)
+			cmd_list->generate_mipmaps(modified_texture);
 	}
 
 #if RESHADE_GUI

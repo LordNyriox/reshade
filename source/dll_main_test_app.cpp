@@ -30,7 +30,7 @@ extern "C" PFN_vkVoidFunction VKAPI_CALL vkGetDeviceProcAddr(VkDevice device, co
 extern "C" PFN_vkVoidFunction VKAPI_CALL vkGetInstanceProcAddr(VkInstance instance, const char *pName);
 
 #define HR_CHECK(exp) { const HRESULT res = (exp); assert(SUCCEEDED(res)); }
-#define VK_CHECK(exp) { const VkResult res = (exp); assert(res == VK_SUCCESS); }
+#define VK_CHECK(exp) { const VkResult res = (exp); assert(res >= VK_SUCCESS); }
 
 struct scoped_module_handle
 {
@@ -145,6 +145,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR lpCmdLine, int nCmdShow
 	if (strstr(lpCmdLine, "-vulkan"))
 		api = reshade::api::device_api::vulkan;
 
+	const bool validation = strstr(lpCmdLine, "-validation") != nullptr;
 	const bool multisample = strstr(lpCmdLine, "-multisample") != nullptr;
 
 	switch (api)
@@ -208,11 +209,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR lpCmdLine, int nCmdShow
 			desc.Windowed = true;
 			desc.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
 
-#ifndef NDEBUG
-			const UINT flags = D3D11_CREATE_DEVICE_DEBUG;
-#else
-			const UINT flags = 0;
-#endif
+			const UINT flags = validation ? D3D10_CREATE_DEVICE_DEBUG : 0;
 			HR_CHECK(D3D10CreateDeviceAndSwapChain(nullptr, D3D10_DRIVER_TYPE_HARDWARE, nullptr, flags, D3D10_SDK_VERSION, &desc, &swapchain, &device));
 		}
 
@@ -269,11 +266,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR lpCmdLine, int nCmdShow
 			desc.Windowed = true;
 			desc.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
 
-#ifndef NDEBUG
-			const UINT flags = D3D11_CREATE_DEVICE_DEBUG;
-#else
-			const UINT flags = 0;
-#endif
+			const UINT flags = validation ? D3D11_CREATE_DEVICE_DEBUG : 0;
 			HR_CHECK(D3D11CreateDeviceAndSwapChain(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, flags, nullptr, 0, D3D11_SDK_VERSION, &desc, &swapchain, &device, nullptr, &immediate_context));
 		}
 
@@ -316,13 +309,13 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR lpCmdLine, int nCmdShow
 		const scoped_module_handle dxgi_module(L"dxgi.dll");
 		const scoped_module_handle d3d12_module(L"d3d12.dll");
 
-#ifndef NDEBUG
-		// Enable D3D debug layer if it is available
-		{   com_ptr<ID3D12Debug> debug_iface;
+		if (validation)
+		{
+			// Enable D3D debug layer if it is available
+			com_ptr<ID3D12Debug> debug_iface;
 			if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug_iface))))
 				debug_iface->EnableDebugLayer();
 		}
-#endif
 
 		// Initialize Direct3D 12
 		com_ptr<ID3D12Device> device;
@@ -334,7 +327,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR lpCmdLine, int nCmdShow
 		com_ptr<ID3D12CommandAllocator> cmd_alloc;
 		com_ptr<ID3D12GraphicsCommandList> cmd_lists[3];
 
-		HR_CHECK(CreateDXGIFactory2(DXGI_CREATE_FACTORY_DEBUG, IID_PPV_ARGS(&dxgi_factory)));
+		HR_CHECK(CreateDXGIFactory2(validation ? DXGI_CREATE_FACTORY_DEBUG : 0, IID_PPV_ARGS(&dxgi_factory)));
 
 		{	HRESULT hr = E_FAIL; com_ptr<IDXGIAdapter> adapter;
 			for (UINT i = 0; dxgi_factory->EnumAdapters(i, &adapter) != DXGI_ERROR_NOT_FOUND; i++, adapter.reset())
@@ -629,10 +622,11 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR lpCmdLine, int nCmdShow
 
 			VkInstanceCreateInfo create_info { VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO };
 			create_info.pApplicationInfo = &app_info;
-#ifndef NDEBUG
-			create_info.enabledLayerCount = ARRAYSIZE(enabled_layers);
-			create_info.ppEnabledLayerNames = enabled_layers;
-#endif
+			if (validation)
+			{
+				create_info.enabledLayerCount = ARRAYSIZE(enabled_layers);
+				create_info.ppEnabledLayerNames = enabled_layers;
+			}
 			create_info.enabledExtensionCount = ARRAYSIZE(enabled_extensions);
 			create_info.ppEnabledExtensionNames = enabled_extensions;
 
@@ -705,10 +699,11 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR lpCmdLine, int nCmdShow
 			VkDeviceCreateInfo create_info { VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO };
 			create_info.queueCreateInfoCount = 1;
 			create_info.pQueueCreateInfos = &queue_info;
-#ifndef NDEBUG
-			create_info.enabledLayerCount = ARRAYSIZE(enabled_layers);
-			create_info.ppEnabledLayerNames = enabled_layers;
-#endif
+			if (validation)
+			{
+				create_info.enabledLayerCount = ARRAYSIZE(enabled_layers);
+				create_info.ppEnabledLayerNames = enabled_layers;
+			}
 			create_info.enabledExtensionCount = ARRAYSIZE(enabled_extensions);
 			create_info.ppEnabledExtensionNames = enabled_extensions;
 

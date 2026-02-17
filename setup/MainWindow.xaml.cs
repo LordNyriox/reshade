@@ -647,6 +647,7 @@ namespace ReShade.Setup
 			bool isApiDDraw = false;
 			bool isApiOpenGL = false;
 			bool isApiVulkan = false;
+			currentInfo.targetApi = Api.Unknown;
 			currentInfo.targetOpenXR = false;
 
 			string basePath = Path.GetDirectoryName(currentInfo.targetPath);
@@ -660,6 +661,11 @@ namespace ReShade.Setup
 			string executableName = Path.GetFileName(currentInfo.targetPath);
 			if (compatibilityIni?.GetString(executableName, "Banned") == "1")
 			{
+				// Automatically uninstall ReShade from banned applications
+				currentInfo.configPath = Path.Combine(basePath, "ReShade.ini");
+
+				InstallStep_UninstallReShadeModule();
+
 				UpdateStatusAndFinish(false, "The target application is known to have blocked or banned the usage of ReShade. Cannot continue installation.");
 				return;
 			}
@@ -1516,7 +1522,7 @@ In that event here are some steps you can try to resolve this:
 			{
 				string basePath = Path.GetDirectoryName(currentInfo.configPath);
 
-				if (currentInfo.targetApi != Api.Vulkan && !currentInfo.targetOpenXR)
+				if (currentInfo.modulePath != null && currentInfo.targetApi != Api.Vulkan && !currentInfo.targetOpenXR)
 				{
 					File.Delete(currentInfo.modulePath);
 				}
