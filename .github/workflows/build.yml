@@ -9,8 +9,7 @@ on:
       - main
   workflow_dispatch:
 
-permissions:  # Restrict default permissions
-  contents: read
+permissions: {}
 
 concurrency:  # Cancel running jobs if new commits are pushed
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -20,7 +19,11 @@ jobs:
   build:
     runs-on: windows-latest
 
+    permissions:
+      contents: read
+
     steps:
+    
       - name: Checkout
         uses: actions/checkout@v6
         with:
@@ -49,19 +52,22 @@ jobs:
           msbuild ReShade.sln /p:Configuration="Release Setup"
 
 #      - name: Upload ReShade (32-bit)
-#        uses: actions/upload-artifact@v6
+#        uses: actions/upload-artifact@v7
 #        with:
+#          archive: false
 #          name: ReShade (32-bit)
 #          path: './bin/Win32/Release/ReShade32.dll'
 
 #      - name: Upload ReShade (64-bit)
-#        uses: actions/upload-artifact@v6
+#        uses: actions/upload-artifact@v7
 #        with:
+#          archive: false
 #          name: ReShade (64-bit)
 #          path: './bin/x64/Release/ReShade64.dll'
 
       - name: Upload ReShade Setup
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
+          archive: false
           name: ReShade Setup
           path: './bin/AnyCPU/Release/ReShade Setup.exe'
