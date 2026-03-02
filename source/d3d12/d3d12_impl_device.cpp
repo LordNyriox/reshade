@@ -715,43 +715,37 @@ void reshade::d3d12::device_impl::update_buffer_region(const void *data, api::re
 	if (immediate_command_list == nullptr)
 		return; // No point in creating upload buffer when it cannot be uploaded
 
-	const D3D12_RESOURCE_DESC desc = reinterpret_cast<ID3D12Resource *>(dst.handle)->GetDesc();
 	if (UINT64_MAX == size)
-		size = desc.Width;
+		size = reinterpret_cast<ID3D12Resource *>(dst.handle)->GetDesc().Width;
 
 	// Allocate host memory for upload
-	D3D12_RESOURCE_DESC intermediate_desc = { D3D12_RESOURCE_DIMENSION_BUFFER };
-	intermediate_desc.Width = size;
-	intermediate_desc.Height = 1;
-	intermediate_desc.DepthOrArraySize = 1;
-	intermediate_desc.MipLevels = 1;
-	intermediate_desc.SampleDesc = { 1, 0 };
-	intermediate_desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-
-	const D3D12_HEAP_PROPERTIES upload_heap_props = { D3D12_HEAP_TYPE_UPLOAD };
-
-	com_ptr<ID3D12Resource> intermediate;
-	if (FAILED(_orig->CreateCommittedResource(&upload_heap_props, D3D12_HEAP_FLAG_NONE, &intermediate_desc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&intermediate))))
+	api::resource intermediate;
+	if (!create_resource(api::resource_desc(size, api::memory_heap::cpu_to_gpu, api::resource_usage::copy_source), nullptr, api::resource_usage::cpu_access, &intermediate))
 	{
-		log::message(log::level::error, "Failed to create upload buffer (width = %llu)!", intermediate_desc.Width);
+		log::message(log::level::error, "Failed to create upload buffer (width = %llu)!", size);
 		return;
 	}
-	intermediate->SetName(L"ReShade upload buffer");
+
+#ifndef NDEBUG
+	set_resource_name(intermediate, "ReShade upload buffer");
+#endif
 
 	// Fill upload buffer with pixel data
-	uint8_t *mapped_data;
-	if (FAILED(ID3D12Resource_Map(intermediate.get(), 0, nullptr, reinterpret_cast<void **>(&mapped_data))))
-		return;
+	if (void *mapped_data;
+		map_buffer_region(intermediate, 0, UINT64_MAX, api::map_access::write_only, &mapped_data))
+	{
+		std::memcpy(mapped_data, data, static_cast<size_t>(size));
 
-	std::memcpy(mapped_data, data, static_cast<size_t>(size));
+		unmap_buffer_region(intermediate);
 
-	ID3D12Resource_Unmap(intermediate.get(), 0, nullptr);
+		// Copy data from upload buffer into target texture using the first available immediate command list
+		immediate_command_list->copy_buffer_region(intermediate, 0, dst, dst_offset, size);
 
-	// Copy data from upload buffer into target texture using the first available immediate command list
-	immediate_command_list->copy_buffer_region(api::resource { reinterpret_cast<uintptr_t>(intermediate.get()) }, 0, dst, dst_offset, size);
+		// Wait for command to finish executing before destroying the upload buffer
+		immediate_command_list->flush(true);
+	}
 
-	// Wait for command to finish executing before destroying the upload buffer
-	immediate_command_list->flush(true);
+	destroy_resource(intermediate);
 }
 void reshade::d3d12::device_impl::update_texture_region(const api::subresource_data &data, api::resource dst, uint32_t dst_subresource, const api::subresource_box *dst_box)
 {
@@ -767,10 +761,8 @@ void reshade::d3d12::device_impl::update_texture_region(const api::subresource_d
 	const D3D12_RESOURCE_DESC desc = reinterpret_cast<ID3D12Resource *>(dst.handle)->GetDesc();
 	if (desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER)
 	{
-		if (dst_subresource != 0 || dst_box != nullptr)
-			return;
-
-		update_buffer_region(data.data, dst, 0, data.slice_pitch);
+		if (dst_subresource == 0 && dst_box == nullptr)
+			update_buffer_region(data.data, dst, 0, data.slice_pitch);
 		return;
 	}
 
@@ -779,55 +771,52 @@ void reshade::d3d12::device_impl::update_texture_region(const api::subresource_d
 
 	UINT row_pitch = api::format_row_pitch(convert_format(desc.Format), width);
 	row_pitch = (row_pitch + D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1u) & ~(D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1u);
-	const UINT64 slice_pitch = api::format_slice_pitch(convert_format(desc.Format), row_pitch, height);
-	height = static_cast<UINT>(slice_pitch / row_pitch);
+	UINT slice_pitch = api::format_slice_pitch(convert_format(desc.Format), row_pitch, height);
+	height = slice_pitch / row_pitch;
+
+	const uint64_t total_image_size = static_cast<uint64_t>(depth) * static_cast<uint64_t>(slice_pitch);
 
 	// Allocate host memory for upload
-	D3D12_RESOURCE_DESC intermediate_desc = { D3D12_RESOURCE_DIMENSION_BUFFER };
-	intermediate_desc.Width = static_cast<UINT64>(depth) * slice_pitch;
-	intermediate_desc.Height = 1;
-	intermediate_desc.DepthOrArraySize = 1;
-	intermediate_desc.MipLevels = 1;
-	intermediate_desc.SampleDesc = { 1, 0 };
-	intermediate_desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-
-	const D3D12_HEAP_PROPERTIES upload_heap_props = { D3D12_HEAP_TYPE_UPLOAD };
-
-	com_ptr<ID3D12Resource> intermediate;
-	if (FAILED(_orig->CreateCommittedResource(&upload_heap_props, D3D12_HEAP_FLAG_NONE, &intermediate_desc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&intermediate))))
+	api::resource intermediate;
+	if (!create_resource(api::resource_desc(total_image_size, api::memory_heap::cpu_to_gpu, api::resource_usage::copy_source), nullptr, api::resource_usage::cpu_access, &intermediate))
 	{
-		log::message(log::level::error, "Failed to create upload buffer (width = %llu)!", intermediate_desc.Width);
+		log::message(log::level::error, "Failed to create upload buffer (width = %llu)!", total_image_size);
 		return;
 	}
-	intermediate->SetName(L"ReShade upload buffer");
+
+#ifndef NDEBUG
+	set_resource_name(intermediate, "ReShade upload buffer");
+#endif
 
 	// Fill upload buffer with pixel data
-	uint8_t *mapped_data;
-	if (FAILED(ID3D12Resource_Map(intermediate.get(), 0, nullptr, reinterpret_cast<void **>(&mapped_data))))
-		return;
-
-	const size_t row_size = data.row_pitch < row_pitch ? data.row_pitch : static_cast<size_t>(row_pitch);
-
-	for (size_t z = 0; z < depth; ++z)
+	if (void *mapped_data;
+		map_buffer_region(intermediate, 0, UINT64_MAX, api::map_access::write_only, &mapped_data))
 	{
-		const auto dst_slice = mapped_data + z * slice_pitch;
-		const auto src_slice = static_cast<const uint8_t *>(data.data) + z * data.slice_pitch;
+		const size_t row_size = std::min(row_pitch, data.row_pitch);
 
-		for (size_t y = 0; y < height; ++y)
+		for (size_t z = 0; z < depth; ++z)
 		{
-			std::memcpy(
-				dst_slice + y * row_pitch,
-				src_slice + y * data.row_pitch, row_size);
+			const auto dst_slice = static_cast<uint8_t *>(mapped_data) + z * slice_pitch;
+			const auto src_slice = static_cast<const uint8_t *>(data.data) + z * data.slice_pitch;
+
+			for (size_t y = 0; y < height; ++y)
+			{
+				std::memcpy(
+					dst_slice + y * row_pitch,
+					src_slice + y * data.row_pitch, row_size);
+			}
 		}
+
+		unmap_buffer_region(intermediate);
+
+		// Copy data from upload buffer into target texture using the first available immediate command list
+		immediate_command_list->copy_buffer_to_texture(intermediate, 0, 0, 0, dst, dst_subresource, dst_box);
+
+		// Wait for command to finish executing before destroying the upload buffer
+		immediate_command_list->flush(true);
 	}
 
-	ID3D12Resource_Unmap(intermediate.get(), 0, nullptr);
-
-	// Copy data from upload buffer into target texture using the first available immediate command list
-	immediate_command_list->copy_buffer_to_texture(api::resource { reinterpret_cast<uintptr_t>(intermediate.get()) }, 0, 0, 0, dst, dst_subresource, dst_box);
-
-	// Wait for command to finish executing before destroying the upload buffer
-	immediate_command_list->flush(true);
+	destroy_resource(intermediate);
 }
 
 bool reshade::d3d12::device_impl::create_pipeline(api::pipeline_layout layout, uint32_t subobject_count, const api::pipeline_subobject *subobjects, api::pipeline *out_pipeline)

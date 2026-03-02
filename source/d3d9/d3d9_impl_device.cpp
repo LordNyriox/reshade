@@ -484,6 +484,7 @@ reshade::api::resource_desc reshade::d3d9::device_impl::get_resource_desc(api::r
 		}
 	case D3DRTYPE_TEXTURE:
 		{
+			// Note: This fails for any mipmap level but the first one for textures with D3DUSAGE_AUTOGENMIPMAP, since in that case the D3D runtime does not have surfaces for those
 			D3DSURFACE_DESC internal_desc;
 			IDirect3DTexture9_GetLevelDesc(static_cast<IDirect3DTexture9 *>(object), 0, &internal_desc);
 			internal_desc.Type = D3DRTYPE_TEXTURE;
@@ -922,6 +923,9 @@ bool reshade::d3d9::device_impl::map_texture_region(api::resource resource, uint
 		{
 			assert(subresource == 0);
 
+			if (box != nullptr && (box->front != 0 || box->back != 1))
+				break;
+
 			RECT rect;
 			D3DLOCKED_RECT locked_rect;
 			if (SUCCEEDED(IDirect3DSurface9_LockRect(static_cast<IDirect3DSurface9 *>(object), &locked_rect, convert_subresource_box_to_rect(box, rect), convert_access_flags(access))))
@@ -934,6 +938,9 @@ bool reshade::d3d9::device_impl::map_texture_region(api::resource resource, uint
 		break;
 	case D3DRTYPE_TEXTURE:
 		{
+			if (box != nullptr && (box->front != 0 || box->back != 1))
+				break;
+
 			RECT rect;
 			D3DLOCKED_RECT locked_rect;
 			if (SUCCEEDED(IDirect3DTexture9_LockRect(static_cast<IDirect3DTexture9 *>(object), subresource, &locked_rect, convert_subresource_box_to_rect(box, rect), convert_access_flags(access))))
@@ -958,6 +965,9 @@ bool reshade::d3d9::device_impl::map_texture_region(api::resource resource, uint
 		break;
 	case D3DRTYPE_CUBETEXTURE:
 		{
+			if (box != nullptr && (box->front != 0 || box->back != 1))
+				break;
+
 			const UINT levels = IDirect3DCubeTexture9_GetLevelCount(static_cast<IDirect3DCubeTexture9 *>(object));
 
 			RECT rect;
@@ -1017,25 +1027,15 @@ void reshade::d3d9::device_impl::unmap_texture_region(api::resource resource, ui
 
 void reshade::d3d9::device_impl::update_buffer_region(const void *data, api::resource dst, uint64_t dst_offset, uint64_t size)
 {
-	assert(dst != 0);
-	assert(dst_offset <= std::numeric_limits<UINT>::max() && (size == UINT64_MAX || size <= std::numeric_limits<UINT>::max()));
-
 	if (data == nullptr)
 		return;
 
-	const auto object = reinterpret_cast<IDirect3DResource9 *>(dst.handle);
-
-	// 'IDirect3DVertexBuffer9_Lock' and 'IDirect3DIndexBuffer9_Lock' are located at the same virtual function table index and have the same interface
 	if (void *mapped_data;
-		SUCCEEDED(IDirect3DVertexBuffer9_Lock(
-			static_cast<IDirect3DVertexBuffer9 *>(object),
-			static_cast<UINT>(dst_offset),
-			size != UINT64_MAX ? static_cast<UINT>(size) : 0,
-			&mapped_data,
-			0)))
+		map_buffer_region(dst, dst_offset, size, api::map_access::write_only, &mapped_data))
 	{
 		std::memcpy(mapped_data, data, static_cast<size_t>(size));
-		IDirect3DVertexBuffer9_Unlock(static_cast<IDirect3DVertexBuffer9 *>(object));
+
+		unmap_buffer_region(dst);
 	}
 }
 void reshade::d3d9::device_impl::update_texture_region(const api::subresource_data &data, api::resource dst, uint32_t dst_subresource, const api::subresource_box *dst_box)
@@ -1045,317 +1045,120 @@ void reshade::d3d9::device_impl::update_texture_region(const api::subresource_da
 	if (data.data == nullptr)
 		return;
 
-	const auto object = reinterpret_cast<IDirect3DResource9 *>(dst.handle);
+	const api::resource_desc desc = get_resource_desc(dst);
 
-	switch (IDirect3DResource9_GetType(object))
+	UINT width, height, depth;
+	if (dst_box != nullptr)
 	{
-	case D3DRTYPE_TEXTURE:
+		width  = dst_box->width();
+		height = dst_box->height();
+		depth  = dst_box->depth();
+	}
+	else
+	{
+		const UINT level = dst_subresource % desc.texture.levels;
+
+		width  = std::max(1u, desc.texture.width >> level);
+		height = std::max(1u, desc.texture.height >> level);
+		depth  = (desc.type == api::resource_type::texture_3d ? std::max(1u, static_cast<uint32_t>(desc.texture.depth_or_layers) >> level) : 1);
+	}
+
+	api::resource intermediate = dst;
+	uint32_t subresource = dst_subresource;
+	const api::subresource_box *src_box = dst_box;
+
+	if ((desc.flags & api::resource_flags::dynamic) == 0)
+	{
+		api::resource_desc intermediate_desc = desc;
+		intermediate_desc.texture.width = width;
+		intermediate_desc.texture.height = height;
+		intermediate_desc.texture.depth_or_layers = static_cast<uint16_t>(depth);
+		intermediate_desc.texture.levels = 1;
+		intermediate_desc.heap = api::memory_heap::cpu_to_gpu;
+		intermediate_desc.usage = api::resource_usage::copy_source;
+
+		subresource = 0;
+		src_box = nullptr;
+
+		if (!create_resource(intermediate_desc, nullptr, api::resource_usage::cpu_access, &intermediate))
 		{
-			// Get D3D texture format
-			// Note: This fails for any mipmap level but the first one for textures with D3DUSAGE_AUTOGENMIPMAP, since in that case the D3D runtime does not have surfaces for those
-			D3DSURFACE_DESC desc;
-			if (FAILED(IDirect3DTexture9_GetLevelDesc(static_cast<IDirect3DTexture9 *>(object), dst_subresource, &desc)))
-				return;
+			log::message(log::level::error, "Failed to create upload buffer (width = %u, height = %u, format = %d)!", width, height, static_cast<int>(desc.texture.format));
+			return;
+		}
+	}
 
-			const UINT width = (dst_box != nullptr) ? dst_box->width() : desc.Width;
-			const UINT height = (dst_box != nullptr) ? dst_box->height() : desc.Height;
-
-			const bool use_systemmem_texture = IDirect3DTexture9_GetLevelCount(static_cast<IDirect3DTexture9 *>(object)) == 1 && dst_box == nullptr;
-
-			com_ptr<IDirect3DTexture9> intermediate;
-			if (desc.Pool == D3DPOOL_DEFAULT)
+	if (api::subresource_data mapped_data;
+		map_texture_region(intermediate, subresource, src_box, api::map_access::write_only, &mapped_data))
+	{
+		// If format is one of these two, assume they were overwritten by 'convert_format_internal', so handle them accordingly
+		// TODO: Maybe store the original format as user data in the resource to avoid this hack?
+		const D3DFORMAT internal_format = convert_format(desc.texture.format);
+		if (internal_format == D3DFMT_A8R8G8B8 || internal_format == D3DFMT_X8R8G8B8)
+		{
+			for (uint32_t z = 0; z < depth; ++z)
 			{
-				if (FAILED(_orig->CreateTexture(width, height, 1, use_systemmem_texture ? 0 : D3DUSAGE_DYNAMIC, desc.Format, use_systemmem_texture ? D3DPOOL_SYSTEMMEM : D3DPOOL_DEFAULT, &intermediate, nullptr)))
+				const auto dst_slice = static_cast<uint8_t *>(mapped_data.data) + z * mapped_data.slice_pitch;
+				const auto src_slice = static_cast<const uint8_t *>(data.data) + z * data.slice_pitch;
+
+				for (uint32_t y = 0; y < height; ++y)
 				{
-					log::message(log::level::error, "Failed to create upload buffer (width = %u, height = %u, levels = 1, usage = %s, format = %d)!", width, height, use_systemmem_texture ? "0" : "D3DUSAGE_DYNAMIC", desc.Format);
-					return;
-				}
-			}
-			else
-			{
-				intermediate = static_cast<IDirect3DTexture9 *>(object);
-			}
+					const auto dst_row = dst_slice + y * mapped_data.row_pitch;
+					const auto src_row = src_slice + y * data.row_pitch;
 
-			D3DLOCKED_RECT locked_rect;
-			if (FAILED(IDirect3DTexture9_LockRect(intermediate.get(), 0, &locked_rect, static_cast<const RECT *>(nullptr), 0)))
-				return;
-			auto mapped_data = static_cast<uint8_t *>(locked_rect.pBits);
-			auto upload_data = static_cast<const uint8_t *>(data.data);
-
-			// If format is one of these two, assume they were overwritten by 'convert_format_internal', so handle them accordingly
-			// TODO: Maybe store the original format as user data in the resource to avoid this hack?
-			if (desc.Format == D3DFMT_A8R8G8B8 || desc.Format == D3DFMT_X8R8G8B8)
-			{
-				for (uint32_t y = 0; y < height; ++y, mapped_data += locked_rect.Pitch, upload_data += data.row_pitch)
-				{
 					switch (data.row_pitch / width)
 					{
 					case 1: // This is likely actually a r8 texture
 						for (uint32_t x = 0, i = 0; x < width * 4; x += 4, i += 1)
-							mapped_data[x + 0] = 0, // Set green and blue channel to zero
-							mapped_data[x + 1] = 0,
-							mapped_data[x + 2] = upload_data[i],
-							mapped_data[x + 3] = 0xFF;
+							dst_row[x + 0] = 0, // Set green and blue channel to zero
+							dst_row[x + 1] = 0,
+							dst_row[x + 2] = src_row[i],
+							dst_row[x + 3] = 0xFF;
 						break;
 					case 2: // This is likely actually a r8g8 texture
 						for (uint32_t x = 0, i = 0; x < width * 4; x += 4, i += 2)
-							mapped_data[x + 0] = 0, // Set blue channel to zero
-							mapped_data[x + 1] = upload_data[i + 1],
-							mapped_data[x + 2] = upload_data[i + 0],
-							mapped_data[x + 3] = 0xFF;
+							dst_row[x + 0] = 0, // Set blue channel to zero
+							dst_row[x + 1] = src_row[i + 1],
+							dst_row[x + 2] = src_row[i + 0],
+							dst_row[x + 3] = 0xFF;
 						break;
 					case 4: // This is likely actually a r8g8b8a8 texture
 					default:
 						for (uint32_t x = 0, i = 0; x < width * 4; x += 4, i += 4)
-							mapped_data[x + 0] = upload_data[i + 2], // Flip RGBA input to BGRA
-							mapped_data[x + 1] = upload_data[i + 1],
-							mapped_data[x + 2] = upload_data[i + 0],
-							mapped_data[x + 3] = upload_data[i + 3];
+							dst_row[x + 0] = src_row[i + 2], // Flip RGBA input to BGRA
+							dst_row[x + 1] = src_row[i + 1],
+							dst_row[x + 2] = src_row[i + 0],
+							dst_row[x + 3] = src_row[i + 3];
 						break;
 					}
 				}
 			}
-			else
-			{
-				for (uint32_t y = 0; y < height; ++y, mapped_data += locked_rect.Pitch, upload_data += data.row_pitch)
-				{
-					std::memcpy(mapped_data, upload_data, std::min(data.row_pitch, static_cast<uint32_t>(locked_rect.Pitch)));
-				}
-			}
-
-			IDirect3DTexture9_UnlockRect(intermediate.get(), 0);
-
-			if (intermediate.get() != object)
-			{
-				if (use_systemmem_texture)
-				{
-					assert(dst_subresource == 0);
-
-					_orig->UpdateTexture(intermediate.get(), static_cast<IDirect3DTexture9 *>(object));
-				}
-				else
-				{
-					RECT dst_rect;
-
-					com_ptr<IDirect3DSurface9> src_surface;
-					IDirect3DTexture9_GetSurfaceLevel(intermediate.get(), 0, &src_surface);
-					com_ptr<IDirect3DSurface9> dst_surface;
-					IDirect3DTexture9_GetSurfaceLevel(static_cast<IDirect3DTexture9 *>(object), dst_subresource, &dst_surface);
-
-					_orig->StretchRect(src_surface.get(), nullptr, dst_surface.get(), convert_subresource_box_to_rect(dst_box, dst_rect), D3DTEXF_NONE);
-				}
-			}
 		}
-		break;
-	case D3DRTYPE_VOLUMETEXTURE:
+		else
 		{
-			// Get D3D texture format
-			D3DVOLUME_DESC desc;
-			if (FAILED(IDirect3DVolumeTexture9_GetLevelDesc(static_cast<IDirect3DVolumeTexture9 *>(object), dst_subresource, &desc)))
-				return;
+			const size_t row_size = std::min(mapped_data.row_pitch, data.row_pitch);
 
-			const UINT width = (dst_box != nullptr) ? dst_box->width() : desc.Width;
-			const UINT height = (dst_box != nullptr) ? dst_box->height() : desc.Height;
-			const UINT depth = (dst_box != nullptr) ? dst_box->depth() : desc.Depth;
-
-			const bool use_systemmem_texture = IDirect3DVolumeTexture9_GetLevelCount(static_cast<IDirect3DVolumeTexture9 *>(object)) == 1 && dst_box == nullptr;
-
-			com_ptr<IDirect3DVolumeTexture9> intermediate;
-			if (desc.Pool == D3DPOOL_DEFAULT && use_systemmem_texture)
+			for (size_t z = 0; z < depth; ++z)
 			{
-				if (FAILED(_orig->CreateVolumeTexture(width, height, depth, 1, 0, desc.Format, D3DPOOL_SYSTEMMEM, &intermediate, nullptr)))
+				const auto dst_slice = static_cast<uint8_t *>(mapped_data.data) + z * mapped_data.slice_pitch;
+				const auto src_slice = static_cast<const uint8_t *>(data.data) + z * data.slice_pitch;
+
+				for (size_t y = 0; y < height; ++y)
 				{
-					log::message(log::level::error, "Failed to create upload buffer (width = %u, height = %u, depth = %u, levels = 1, usage = 0, format = %d)!", width, height, depth, desc.Format);
-					return;
-				}
-			}
-			else
-			{
-				intermediate = static_cast<IDirect3DVolumeTexture9 *>(object);
-			}
-
-			D3DLOCKED_BOX locked_box;
-			if (FAILED(IDirect3DVolumeTexture9_LockBox(intermediate.get(), 0, &locked_box, static_cast<const D3DBOX *>(nullptr), 0)))
-				return;
-			auto mapped_data = static_cast<uint8_t *>(locked_box.pBits);
-			auto upload_data = static_cast<const uint8_t *>(data.data);
-
-			// If format is one of these two, assume they were overwritten by 'convert_format_internal', so handle them accordingly
-			// TODO: Maybe store the original format as user data in the resource to avoid this hack?
-			if (desc.Format == D3DFMT_A8R8G8B8 || desc.Format == D3DFMT_X8R8G8B8)
-			{
-				for (uint32_t z = 0; z < depth; ++z, mapped_data += locked_box.SlicePitch, upload_data += data.slice_pitch)
-				{
-					auto mapped_data_slice = mapped_data;
-					auto upload_data_slice = upload_data;
-
-					for (uint32_t y = 0; y < height; ++y, mapped_data_slice += locked_box.RowPitch, upload_data_slice += data.row_pitch)
-					{
-						switch (data.row_pitch / width)
-						{
-						case 1: // This is likely actually a r8 texture
-							for (uint32_t x = 0, i = 0; x < width * 4; x += 4, i += 1)
-								mapped_data_slice[x + 0] = 0, // Set green and blue channel to zero
-								mapped_data_slice[x + 1] = 0,
-								mapped_data_slice[x + 2] = upload_data_slice[i],
-								mapped_data_slice[x + 3] = 0xFF;
-							break;
-						case 2: // This is likely actually a r8g8 texture
-							for (uint32_t x = 0, i = 0; x < width * 4; x += 4, i += 2)
-								mapped_data_slice[x + 0] = 0, // Set blue channel to zero
-								mapped_data_slice[x + 1] = upload_data_slice[i + 1],
-								mapped_data_slice[x + 2] = upload_data_slice[i + 0],
-								mapped_data_slice[x + 3] = 0xFF;
-							break;
-						case 4: // This is likely actually a r8g8b8a8 texture
-						default:
-							for (uint32_t x = 0, i = 0; x < width * 4; x += 4, i += 4)
-								mapped_data_slice[x + 0] = upload_data_slice[i + 2], // Flip RGBA input to BGRA
-								mapped_data_slice[x + 1] = upload_data_slice[i + 1],
-								mapped_data_slice[x + 2] = upload_data_slice[i + 0],
-								mapped_data_slice[x + 3] = upload_data_slice[i + 3];
-							break;
-						}
-					}
-				}
-			}
-			else
-			{
-				for (uint32_t z = 0; z < depth; ++z, mapped_data += locked_box.SlicePitch, upload_data += data.slice_pitch)
-				{
-					auto mapped_data_slice = mapped_data;
-					auto upload_data_slice = upload_data;
-
-					for (uint32_t y = 0; y < height; ++y, mapped_data_slice += locked_box.RowPitch, upload_data_slice += data.row_pitch)
-					{
-						std::memcpy(mapped_data_slice, upload_data_slice, std::min(data.row_pitch, static_cast<uint32_t>(locked_box.RowPitch)));
-					}
-				}
-			}
-
-			IDirect3DVolumeTexture9_UnlockBox(intermediate.get(), 0);
-
-			if (intermediate.get() != object)
-			{
-				if (use_systemmem_texture)
-				{
-					assert(dst_subresource == 0);
-
-					_orig->UpdateTexture(intermediate.get(), static_cast<IDirect3DVolumeTexture9 *>(object));
+					std::memcpy(
+						dst_slice + y * mapped_data.row_pitch,
+						src_slice + y * data.row_pitch, row_size);
 				}
 			}
 		}
-		break;
-	case D3DRTYPE_CUBETEXTURE:
-		{
-			// Get D3D texture format
-			// Note: This fails for any mipmap level but the first one for textures with D3DUSAGE_AUTOGENMIPMAP, since in that case the D3D runtime does not have surfaces for those
-			D3DSURFACE_DESC desc;
-			if (FAILED(IDirect3DCubeTexture9_GetLevelDesc(static_cast<IDirect3DCubeTexture9 *>(object), dst_subresource, &desc)))
-				return;
 
-			const UINT width = (dst_box != nullptr) ? dst_box->width() : desc.Width;
-			const UINT height = (dst_box != nullptr) ? dst_box->height() : desc.Height;
-			if (width != height)
-				return;
+		unmap_texture_region(intermediate, subresource);
+	}
 
-			const bool use_systemmem_texture = IDirect3DCubeTexture9_GetLevelCount(static_cast<IDirect3DCubeTexture9 *>(object)) == 1 && dst_box == nullptr;
+	if (intermediate != dst)
+	{
+		copy_texture_region(intermediate, subresource, src_box, dst, dst_subresource, dst_box, api::filter_mode::min_mag_mip_point);
 
-			com_ptr<IDirect3DCubeTexture9> intermediate;
-			if (desc.Pool == D3DPOOL_DEFAULT)
-			{
-				if (FAILED(_orig->CreateCubeTexture(width, 1, use_systemmem_texture ? 0 : D3DUSAGE_DYNAMIC, desc.Format, use_systemmem_texture ? D3DPOOL_SYSTEMMEM : D3DPOOL_DEFAULT, &intermediate, nullptr)))
-				{
-					log::message(log::level::error, "Failed to create upload buffer (width = %u, height = %u, levels = 1, usage = %s, format = %d)!", width, height, use_systemmem_texture ? "0" : "D3DUSAGE_DYNAMIC", desc.Format);
-					return;
-				}
-			}
-			else
-			{
-				intermediate = static_cast<IDirect3DCubeTexture9 *>(object);
-			}
-
-			D3DLOCKED_RECT locked_rect;
-
-			for (D3DCUBEMAP_FACES face = D3DCUBEMAP_FACE_POSITIVE_X; face <= D3DCUBEMAP_FACE_NEGATIVE_Z; face = static_cast<D3DCUBEMAP_FACES>(face + 1))
-			{
-				if (FAILED(IDirect3DCubeTexture9_LockRect(intermediate.get(), face, 0, &locked_rect, static_cast<const RECT *>(nullptr), 0)))
-					return;
-				auto mapped_data = static_cast<uint8_t *>(locked_rect.pBits);
-				auto upload_data = static_cast<const uint8_t *>(data.data);
-
-				// If format is one of these two, assume they were overwritten by 'convert_format_internal', so handle them accordingly
-				// TODO: Maybe store the original format as user data in the resource to avoid this hack?
-				if (desc.Format == D3DFMT_A8R8G8B8 || desc.Format == D3DFMT_X8R8G8B8)
-				{
-					for (uint32_t y = 0; y < height; ++y, mapped_data += locked_rect.Pitch, upload_data += data.row_pitch)
-					{
-						switch (data.row_pitch / width)
-						{
-						case 1: // This is likely actually a r8 texture
-							for (uint32_t x = 0, i = 0; x < width * 4; x += 4, i += 1)
-								mapped_data[x + 0] = 0, // Set green and blue channel to zero
-								mapped_data[x + 1] = 0,
-								mapped_data[x + 2] = upload_data[i],
-								mapped_data[x + 3] = 0xFF;
-							break;
-						case 2: // This is likely actually a r8g8 texture
-							for (uint32_t x = 0, i = 0; x < width * 4; x += 4, i += 2)
-								mapped_data[x + 0] = 0, // Set blue channel to zero
-								mapped_data[x + 1] = upload_data[i + 1],
-								mapped_data[x + 2] = upload_data[i + 0],
-								mapped_data[x + 3] = 0xFF;
-							break;
-						case 4: // This is likely actually a r8g8b8a8 texture
-						default:
-							for (uint32_t x = 0, i = 0; x < width * 4; x += 4, i += 4)
-								mapped_data[x + 0] = upload_data[i + 2], // Flip RGBA input to BGRA
-								mapped_data[x + 1] = upload_data[i + 1],
-								mapped_data[x + 2] = upload_data[i + 0],
-								mapped_data[x + 3] = upload_data[i + 3];
-							break;
-						}
-					}
-				}
-				else
-				{
-					for (uint32_t y = 0; y < height; ++y, mapped_data += locked_rect.Pitch, upload_data += data.row_pitch)
-					{
-						std::memcpy(mapped_data, upload_data, std::min(data.row_pitch, static_cast<uint32_t>(locked_rect.Pitch)));
-					}
-				}
-
-				IDirect3DCubeTexture9_UnlockRect(intermediate.get(), face, 0);
-			}
-
-			if (intermediate.get() != object)
-			{
-				if (use_systemmem_texture)
-				{
-					assert(dst_subresource == 0);
-
-					_orig->UpdateTexture(intermediate.get(), static_cast<IDirect3DCubeTexture9 *>(object));
-				}
-				else
-				{
-					RECT dst_rect;
-
-					for (D3DCUBEMAP_FACES face = D3DCUBEMAP_FACE_POSITIVE_X; face <= D3DCUBEMAP_FACE_NEGATIVE_Z; face = static_cast<D3DCUBEMAP_FACES>(face + 1))
-					{
-						com_ptr<IDirect3DSurface9> src_surface;
-						IDirect3DCubeTexture9_GetCubeMapSurface(intermediate.get(), face, 0, &src_surface);
-						com_ptr<IDirect3DSurface9> dst_surface;
-						IDirect3DCubeTexture9_GetCubeMapSurface(static_cast<IDirect3DCubeTexture9 *>(object), face, dst_subresource, &dst_surface);
-
-						_orig->StretchRect(src_surface.get(), nullptr, dst_surface.get(), convert_subresource_box_to_rect(dst_box, dst_rect), D3DTEXF_NONE);
-					}
-				}
-			}
-		}
-		break;
-	default:
-		assert(false); // Not implemented
-		break;
+		destroy_resource(intermediate);
 	}
 }
 
@@ -1582,11 +1385,12 @@ bool reshade::d3d9::device_impl::create_pipeline(api::pipeline_layout, uint32_t 
 				goto exit_failure;
 			}
 
-			if (float *mapped_data;
-				SUCCEEDED(IDirect3DVertexBuffer9_Lock(_default_input_stream.get(), 0, max_vertices * sizeof(float), reinterpret_cast<void **>(&mapped_data), 0)))
+			if (void *mapped_data;
+				SUCCEEDED(IDirect3DVertexBuffer9_Lock(_default_input_stream.get(), 0, max_vertices * sizeof(float), &mapped_data, 0)))
 			{
 				for (UINT i = 0; i < max_vertices; ++i)
-					mapped_data[i] = static_cast<float>(i);
+					static_cast<float *>(mapped_data)[i] = static_cast<float>(i);
+
 				IDirect3DVertexBuffer9_Unlock(_default_input_stream.get());
 			}
 		}

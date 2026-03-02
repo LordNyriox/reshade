@@ -1850,15 +1850,15 @@ void reshade::opengl::device_impl::update_buffer_region(const void *data, api::r
 		// The 'GL_COPY_WRITE_BUFFER' target does not affect other OpenGL state, so should be fine to leave it bound
 	}
 }
-void reshade::opengl::device_impl::update_texture_region(const api::subresource_data &data, api::resource dest, uint32_t dest_subresource, const api::subresource_box *dest_box)
+void reshade::opengl::device_impl::update_texture_region(const api::subresource_data &data, api::resource dst, uint32_t dst_subresource, const api::subresource_box *dst_box)
 {
-	assert(dest != 0);
+	assert(dst != 0);
 
 	if (data.data == nullptr)
 		return;
 
-	const GLenum target = dest.handle >> 40;
-	const GLuint object = dest.handle & 0xFFFFFFFF;
+	const GLenum target = dst.handle >> 40;
+	const GLuint object = dst.handle & 0xFFFFFFFF;
 
 	// Get current state
 	GLint prev_unpack_lsb = GL_FALSE;
@@ -1902,20 +1902,20 @@ void reshade::opengl::device_impl::update_texture_region(const api::subresource_
 	if (object != prev_binding)
 		gl.BindTexture(target, object);
 
-	const api::resource_desc desc = get_resource_desc(dest);
+	const api::resource_desc desc = get_resource_desc(dst);
 
-	const GLuint level = dest_subresource % desc.texture.levels;
-	      GLuint layer = dest_subresource / desc.texture.levels;
+	const GLuint level = dst_subresource % desc.texture.levels;
+	      GLuint layer = dst_subresource / desc.texture.levels;
 
 	GLuint xoffset, yoffset, zoffset, width, height, depth;
-	if (dest_box != nullptr)
+	if (dst_box != nullptr)
 	{
-		xoffset = dest_box->left;
-		yoffset = dest_box->top;
-		zoffset = dest_box->front;
-		width   = dest_box->width();
-		height  = dest_box->height();
-		depth   = dest_box->depth();
+		xoffset = dst_box->left;
+		yoffset = dst_box->top;
+		zoffset = dst_box->front;
+		width   = dst_box->width();
+		height  = dst_box->height();
+		depth   = dst_box->depth();
 	}
 	else
 	{
@@ -1937,7 +1937,8 @@ void reshade::opengl::device_impl::update_texture_region(const api::subresource_
 
 	const auto row_pitch = api::format_row_pitch(desc.texture.format, width);
 	const auto slice_pitch = api::format_slice_pitch(desc.texture.format, row_pitch, height);
-	const auto total_image_size = depth * static_cast<size_t>(slice_pitch);
+	const auto total_image_size = static_cast<size_t>(depth) * static_cast<size_t>(slice_pitch);
+
 	const bool packed_data_layout =
 		(row_pitch == data.row_pitch || height == 1) &&
 		(slice_pitch == data.slice_pitch || depth == 1);

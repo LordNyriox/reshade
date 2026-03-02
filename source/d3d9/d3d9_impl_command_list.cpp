@@ -61,6 +61,11 @@ void reshade::d3d9::device_impl::begin_render_pass(uint32_t count, const api::re
 		if (rts[i].load_op == api::render_pass_load_op::clear)
 			clear_flags |= D3DCLEAR_TARGET; // This will clear all render targets, not just the current one ...
 	}
+#ifndef NDEBUG
+	if (clear_flags & D3DCLEAR_TARGET)
+		for (uint32_t k = 0; k < count; ++k)
+			assert(rts[k].load_op == api::render_pass_load_op::clear || rts[k].load_op == api::render_pass_load_op::discard);
+#endif
 
 	api::resource_view depth_stencil_handle = {};
 	if (ds != nullptr && ds->view != 0)
@@ -389,9 +394,9 @@ void reshade::d3d9::device_impl::bind_descriptor_tables(api::shader_stage stages
 
 void reshade::d3d9::device_impl::bind_index_buffer(api::resource buffer, [[maybe_unused]] uint64_t offset, [[maybe_unused]] uint32_t index_size)
 {
-#ifndef NDEBUG
 	assert(offset == 0);
 
+#ifndef NDEBUG
 	if (buffer != 0)
 	{
 		assert(index_size == 2 || index_size == 4);
@@ -523,10 +528,8 @@ void reshade::d3d9::device_impl::copy_texture_region(api::resource src, uint32_t
 		src_surface = static_cast<IDirect3DSurface9 *>(src_object);
 		break;
 	case D3DRTYPE_TEXTURE:
-		{
-			if (FAILED(IDirect3DTexture9_GetSurfaceLevel(static_cast<IDirect3DTexture9 *>(src_object), src_level, &src_surface)))
-				return;
-		}
+		if (FAILED(IDirect3DTexture9_GetSurfaceLevel(static_cast<IDirect3DTexture9 *>(src_object), src_level, &src_surface)))
+			return;
 		break;
 	case D3DRTYPE_CUBETEXTURE:
 		{
@@ -538,7 +541,7 @@ void reshade::d3d9::device_impl::copy_texture_region(api::resource src, uint32_t
 		}
 		break;
 	case D3DRTYPE_VOLUMETEXTURE:
-		if (src_subresource == 0 && dst_subresource == 0 && IDirect3DResource9_GetType(dst_object) == D3DRTYPE_VOLUMETEXTURE)
+		if (src_level == 0 && IDirect3DResource9_GetType(dst_object) == D3DRTYPE_VOLUMETEXTURE)
 		{
 			D3DVOLUME_DESC src_desc;
 			IDirect3DVolumeTexture9_GetLevelDesc(static_cast<IDirect3DVolumeTexture9 *>(src_object), 0, &src_desc);
@@ -566,10 +569,8 @@ void reshade::d3d9::device_impl::copy_texture_region(api::resource src, uint32_t
 		dst_surface = static_cast<IDirect3DSurface9 *>(dst_object);
 		break;
 	case D3DRTYPE_TEXTURE:
-		{
-			if (FAILED(IDirect3DTexture9_GetSurfaceLevel(static_cast<IDirect3DTexture9 *>(dst_object), dst_level, &dst_surface)))
-				return;
-		}
+		if (FAILED(IDirect3DTexture9_GetSurfaceLevel(static_cast<IDirect3DTexture9 *>(dst_object), dst_level, &dst_surface)))
+			return;
 		break;
 	case D3DRTYPE_CUBETEXTURE:
 		{
@@ -595,9 +596,16 @@ void reshade::d3d9::device_impl::copy_texture_region(api::resource src, uint32_t
 
 	if (dst_desc.Pool == D3DPOOL_DEFAULT && src_desc.Pool == D3DPOOL_SYSTEMMEM)
 	{
-		_orig->UpdateSurface(
-			src_surface.get(), convert_subresource_box_to_rect(src_box, src_rect),
-			dst_surface.get(), reinterpret_cast<const POINT *>(convert_subresource_box_to_rect(dst_box, dst_rect)));
+		if (src_level == 0 && dst_level == 0 && src_box == nullptr && dst_box == nullptr && src_object != src_surface.get() && dst_object != dst_surface.get())
+		{
+			_orig->UpdateTexture(static_cast<IDirect3DBaseTexture9 *>(src_object), static_cast<IDirect3DBaseTexture9 *>(dst_object));
+		}
+		else
+		{
+			_orig->UpdateSurface(
+				src_surface.get(), convert_subresource_box_to_rect(src_box, src_rect),
+				dst_surface.get(), reinterpret_cast<const POINT *>(convert_subresource_box_to_rect(dst_box, dst_rect)));
+		}
 		return;
 	}
 	if (dst_desc.Pool == D3DPOOL_SYSTEMMEM)

@@ -2268,7 +2268,7 @@ bool reshade::runtime::create_effect(size_t effect_index, size_t permutation_ind
 					nullptr, api::resource_usage::cpu_access, &effect.cb))
 			{
 				log::message(log::level::error, "Failed to create constant buffer for effect file '%s'!", effect.source_file.u8string().c_str());
-				return false;
+				goto exit_failure;
 			}
 
 			_device->set_resource_name(effect.cb, "ReShade constant buffer");
@@ -2281,7 +2281,7 @@ bool reshade::runtime::create_effect(size_t effect_index, size_t permutation_ind
 		if (!_device->allocate_descriptor_table(permutation.layout, 0, &permutation.cb_table))
 		{
 			log::message(log::level::error, "Failed to create constant buffer descriptor table for effect file '%s'!", effect.source_file.u8string().c_str());
-			return false;
+			goto exit_failure;
 		}
 
 		cb_buffer_range.buffer = effect.cb;
@@ -2299,7 +2299,7 @@ bool reshade::runtime::create_effect(size_t effect_index, size_t permutation_ind
 		if (!_device->allocate_descriptor_tables(static_cast<uint32_t>(sampler_with_resource_view ? total_pass_count : 1), permutation.layout, 1, sampler_with_resource_view ? shader_resource_view_tables.data() : &permutation.sampler_table))
 		{
 			log::message(log::level::error, "Failed to create sampler descriptor table for effect file '%s'!", effect.source_file.u8string().c_str());
-			return false;
+			goto exit_failure;
 		}
 	}
 	if (srv_range.count != 0 && !sampler_with_resource_view)
@@ -2307,7 +2307,7 @@ bool reshade::runtime::create_effect(size_t effect_index, size_t permutation_ind
 		if (!_device->allocate_descriptor_tables(static_cast<uint32_t>(total_pass_count), permutation.layout, 2, shader_resource_view_tables.data()))
 		{
 			log::message(log::level::error, "Failed to create texture descriptor table for effect file '%s'!", effect.source_file.u8string().c_str());
-			return false;
+			goto exit_failure;
 		}
 	}
 	if (uav_range.count != 0)
@@ -2315,7 +2315,7 @@ bool reshade::runtime::create_effect(size_t effect_index, size_t permutation_ind
 		if (!_device->allocate_descriptor_tables(static_cast<uint32_t>(total_pass_count), permutation.layout, sampler_with_resource_view ? 2 : 3, unordered_access_view_tables.data()))
 		{
 			log::message(log::level::error, "Failed to create storage descriptor table for effect file '%s'!", effect.source_file.u8string().c_str());
-			return false;
+			goto exit_failure;
 		}
 	}
 
@@ -2365,7 +2365,7 @@ bool reshade::runtime::create_effect(size_t effect_index, size_t permutation_ind
 					effect.errors += "error: internal compiler error";
 
 					log::message(log::level::error, "Failed to create compute pipeline for pass %zu in technique '%s' in '%s'!", pass_index, tech.name.c_str(), effect.source_file.u8string().c_str());
-					return false;
+					goto exit_failure;
 				}
 			}
 			else
@@ -2559,7 +2559,7 @@ bool reshade::runtime::create_effect(size_t effect_index, size_t permutation_ind
 					effect.errors += "error: internal compiler error";
 
 					log::message(log::level::error, "Failed to create graphics pipeline for pass %zu in technique '%s' in '%s'!", pass_index, tech.name.c_str(), effect.source_file.u8string().c_str());
-					return false;
+					goto exit_failure;
 				}
 			}
 
@@ -2613,7 +2613,7 @@ bool reshade::runtime::create_effect(size_t effect_index, size_t permutation_ind
 				else
 				{
 					log::message(log::level::error, "Failed to create sampler object in '%s'!", effect.source_file.u8string().c_str());
-					return false;
+					goto exit_failure;
 				}
 
 				api::descriptor_table_update &write = descriptor_writes.emplace_back();
@@ -2718,6 +2718,12 @@ bool reshade::runtime::create_effect(size_t effect_index, size_t permutation_ind
 	load_textures(effect_index);
 
 	return true;
+
+exit_failure:
+	_device->free_descriptor_tables(static_cast<uint32_t>(shader_resource_view_tables.size()), shader_resource_view_tables.data());
+	_device->free_descriptor_tables(static_cast<uint32_t>(unordered_access_view_tables.size()), unordered_access_view_tables.data());
+
+	return false;
 }
 void reshade::runtime::destroy_effect(size_t effect_index, bool unload)
 {

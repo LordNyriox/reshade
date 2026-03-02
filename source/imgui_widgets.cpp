@@ -1008,8 +1008,10 @@ void reshade::imgui::image_with_checkerboard_background(ImTextureID user_texture
 	ImDrawList *const draw_list = ImGui::GetWindowDrawList();
 
 	// Render background checkerboard pattern
-	const ImVec2 pos_min = ImGui::GetCursorScreenPos();
-	const ImVec2 pos_max = ImVec2(pos_min.x + size.x, pos_min.y + size.y); int yi = 0;
+	ImVec2 pos_min = ImGui::GetCursorScreenPos();
+	ImVec2 pos_max = pos_min + size; int yi = 0;
+	pos_min = ImMax(pos_min, draw_list->GetClipRectMin());
+	pos_max = ImMin(pos_max, draw_list->GetClipRectMax());
 
 	for (float y = pos_min.y, grid_size = 25.0f; y < pos_max.y; y += grid_size, yi++)
 	{

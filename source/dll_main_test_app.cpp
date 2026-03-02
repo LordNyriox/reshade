@@ -146,6 +146,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR lpCmdLine, int nCmdShow
 		api = reshade::api::device_api::vulkan;
 
 	const bool validation = strstr(lpCmdLine, "-validation") != nullptr;
+	const bool vsync = strstr(lpCmdLine, "-vsync") != nullptr;
 	const bool multisample = strstr(lpCmdLine, "-multisample") != nullptr;
 
 	switch (api)
@@ -160,7 +161,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR lpCmdLine, int nCmdShow
 		pp.hDeviceWindow = window_handle;
 		pp.Windowed = true;
 		pp.MultiSampleType = multisample ? D3DMULTISAMPLE_4_SAMPLES : D3DMULTISAMPLE_NONE;
-		pp.PresentationInterval = D3DPRESENT_INTERVAL_ONE;
+		pp.PresentationInterval = vsync ? D3DPRESENT_INTERVAL_ONE : D3DPRESENT_INTERVAL_IMMEDIATE;
 
 		// Initialize Direct3D 9
 		com_ptr<IDirect3D9> d3d = Direct3DCreate9(D3D_SDK_VERSION);
@@ -241,7 +242,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR lpCmdLine, int nCmdShow
 			const float color[4] = { 0.5f, 0.5f, 0.5f, 1.0f };
 			device->ClearRenderTargetView(back_buffer_rtv.get(), color);
 
-			HR_CHECK(swapchain->Present(1, 0));
+			HR_CHECK(swapchain->Present(vsync ? 1 : 0, 0));
 		}
 	}
 	#pragma endregion
@@ -298,7 +299,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR lpCmdLine, int nCmdShow
 			const float color[4] = { 0.5f, 0.5f, 0.5f, 1.0f };
 			immediate_context->ClearRenderTargetView(back_buffer_rtv.get(), color);
 
-			HR_CHECK(swapchain->Present(1, 0));
+			HR_CHECK(swapchain->Present(vsync ? 1 : 0, 0));
 		}
 	}
 	#pragma endregion
@@ -358,7 +359,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR lpCmdLine, int nCmdShow
 			desc.BufferCount = num_buffers;
 			desc.Scaling = DXGI_SCALING_STRETCH;
 			desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
-
+			desc.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
 
 			com_ptr<IDXGISwapChain1> dxgi_swapchain;
 
@@ -462,12 +463,12 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR lpCmdLine, int nCmdShow
 				HR_CHECK(command_queue->QueryInterface(&queue_downlevel));
 
 				// Windows 7 present path does not have a DXGI swap chain
-				HR_CHECK(queue_downlevel->Present(dummy_list.get(), back_buffers[swap_index].get(), window_handle, D3D12_DOWNLEVEL_PRESENT_FLAG_WAIT_FOR_VBLANK));
+				HR_CHECK(queue_downlevel->Present(dummy_list.get(), back_buffers[swap_index].get(), window_handle, vsync ? D3D12_DOWNLEVEL_PRESENT_FLAG_WAIT_FOR_VBLANK : D3D12_DOWNLEVEL_PRESENT_FLAG_NONE));
 			}
 			else
 			{
 				// Synchronization is handled in 'swapchain_impl::on_present'
-				HR_CHECK(swapchain->Present(1, 0));
+				HR_CHECK(swapchain->Present(vsync ? 1 : 0, vsync ? 0 : DXGI_PRESENT_ALLOW_TEARING));
 			}
 		}
 	}
@@ -551,6 +552,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR lpCmdLine, int nCmdShow
 					return reinterpret_cast<GLADapiproc>(proc_address);
 				}, opengl_module.module))
 			return 1;
+
+		wglSwapIntervalEXT(vsync ? 1 : 0);
 
 		while (true)
 		{
@@ -751,7 +754,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR lpCmdLine, int nCmdShow
 			create_info.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
 			create_info.preTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
 			create_info.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
-			create_info.presentMode = VK_PRESENT_MODE_FIFO_KHR;
+			create_info.presentMode = vsync ? VK_PRESENT_MODE_FIFO_KHR : VK_PRESENT_MODE_IMMEDIATE_KHR;
 			create_info.clipped = VK_TRUE;
 			create_info.oldSwapchain = old_swapchain;
 

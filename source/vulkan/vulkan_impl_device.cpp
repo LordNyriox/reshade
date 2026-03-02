@@ -1097,12 +1097,7 @@ void reshade::vulkan::device_impl::update_buffer_region(const void *data, api::r
 	if (immediate_command_list == nullptr)
 		return;
 
-	if (UINT64_MAX == size)
-		size = get_private_data_for_object<VK_OBJECT_TYPE_BUFFER>((VkBuffer)dst.handle)->create_info.size;
-
-	immediate_command_list->_has_commands = true;
-
-	vk.CmdUpdateBuffer(immediate_command_list->_orig, (VkBuffer)dst.handle, dst_offset, size, data);
+	immediate_command_list->update_buffer_region(data, dst, dst_offset, size);
 
 	immediate_command_list->flush(nullptr);
 }
@@ -1123,7 +1118,8 @@ void reshade::vulkan::device_impl::update_texture_region(const api::subresource_
 
 	const auto row_pitch = api::format_row_pitch(convert_format(resource_data->create_info.format), region.imageExtent.width);
 	const auto slice_pitch = api::format_slice_pitch(convert_format(resource_data->create_info.format), row_pitch, region.imageExtent.height);
-	const auto total_image_size = region.imageExtent.depth * static_cast<size_t>(slice_pitch);
+	const auto total_image_size = static_cast<size_t>(region.imageExtent.depth) * static_cast<size_t>(slice_pitch);
+
 	const bool packed_data_layout =
 		(row_pitch == data.row_pitch || region.imageExtent.height == 1) &&
 		(slice_pitch == data.slice_pitch || region.imageExtent.depth == 1);
@@ -1147,26 +1143,20 @@ void reshade::vulkan::device_impl::update_texture_region(const api::subresource_
 		return; // No point in creating upload buffer when it cannot be uploaded
 
 	// Allocate host memory for upload
-	VkBuffer intermediate = VK_NULL_HANDLE;
-	VmaAllocation intermediate_mem = VK_NULL_HANDLE;
-
-	{   VkBufferCreateInfo create_info { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
-		create_info.size = total_image_size;
-		create_info.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-
-		VmaAllocationCreateInfo alloc_info = {};
-		alloc_info.usage = VMA_MEMORY_USAGE_CPU_ONLY;
-
-		if (vmaCreateBuffer(_alloc, &create_info, &alloc_info, &intermediate, &intermediate_mem, nullptr) != VK_SUCCESS)
-		{
-			log::message(log::level::error, "Failed to create upload buffer (width = %llu)!", create_info.size);
-			return;
-		}
+	api::resource intermediate;
+	if (!create_resource(api::resource_desc(total_image_size, api::memory_heap::cpu_to_gpu, api::resource_usage::copy_source), nullptr, api::resource_usage::cpu_access, &intermediate))
+	{
+		log::message(log::level::error, "Failed to create upload buffer (width = %llu)!", total_image_size);
+		return;
 	}
 
+#ifndef NDEBUG
+	set_resource_name(intermediate, "ReShade upload buffer");
+#endif
+
 	// Fill upload buffer with pixel data
-	uint8_t *mapped_data = nullptr;
-	if (vmaMapMemory(_alloc, intermediate_mem, reinterpret_cast<void **>(&mapped_data)) == VK_SUCCESS)
+	if (void *mapped_data;
+		map_buffer_region(intermediate, 0, UINT64_MAX, api::map_access::write_only, &mapped_data))
 	{
 		if (packed_data_layout)
 		{
@@ -1174,23 +1164,32 @@ void reshade::vulkan::device_impl::update_texture_region(const api::subresource_
 		}
 		else
 		{
-			const size_t row_size = data.row_pitch < row_pitch ? data.row_pitch : static_cast<size_t>(row_pitch);
+			const size_t row_size = std::min(row_pitch, data.row_pitch);
 
 			for (size_t z = 0; z < region.imageExtent.depth; ++z)
-				for (size_t y = 0; y < region.imageExtent.height; ++y, mapped_data += row_pitch)
-					std::memcpy(mapped_data, static_cast<const uint8_t *>(data.data) + z * data.slice_pitch + y * data.row_pitch, row_size);
+			{
+				const auto dst_slice = static_cast<uint8_t *>(mapped_data) + z * slice_pitch;
+				const auto src_slice = static_cast<const uint8_t *>(data.data) + z * data.slice_pitch;
+
+				for (size_t y = 0; y < region.imageExtent.height; ++y)
+				{
+					std::memcpy(
+						dst_slice + y * row_pitch,
+						src_slice + y * data.row_pitch, row_size);
+				}
+			}
 		}
 
-		vmaUnmapMemory(_alloc, intermediate_mem);
+		unmap_buffer_region(intermediate);
 
 		// Copy data from upload buffer into target texture using the first available immediate command list
-		immediate_command_list->copy_buffer_to_texture({ (uint64_t)intermediate }, 0, 0, 0, dst, dst_subresource, dst_box);
+		immediate_command_list->copy_buffer_to_texture(intermediate, 0, 0, 0, dst, dst_subresource, dst_box);
 
 		// Wait for command to finish executing before destroying the upload buffer
 		immediate_command_list->flush(nullptr);
 	}
 
-	vmaDestroyBuffer(_alloc, intermediate, intermediate_mem);
+	destroy_resource(intermediate);
 }
 
 bool reshade::vulkan::device_impl::create_shader_module(VkShaderStageFlagBits stage, const api::shader_desc &desc, VkPipelineShaderStageCreateInfo &stage_info, VkSpecializationInfo &spec_info, std::vector<VkSpecializationMapEntry> &spec_map)
