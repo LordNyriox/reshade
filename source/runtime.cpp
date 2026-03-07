@@ -38,17 +38,137 @@
 #include <stb_image_write_hdr_png.h>
 #include <stb_image_resize2.h>
 
-bool resolve_path(std::filesystem::path &path, std::error_code &ec)
+std::string expand_macro_string(const std::string &input, std::vector<std::pair<std::string, std::string>> macros = {})
 {
+	std::string result;
+
+	for (size_t offset = 0, macro_beg, macro_end; offset < input.size(); offset = macro_end + 1)
+	{
+		macro_beg = input.find('%', offset);
+		macro_end = input.find('%', macro_beg + 1);
+
+		if (macro_beg == std::string::npos || macro_end == std::string::npos)
+		{
+			result += input.substr(offset);
+			break;
+		}
+		else
+		{
+			result += input.substr(offset, macro_beg - offset);
+
+			if (macro_end == macro_beg + 1) // Handle case of %% to escape percentage symbol
+			{
+				result += '%';
+				continue;
+			}
+		}
+
+		std::string_view replacing(input);
+		replacing = replacing.substr(macro_beg + 1, macro_end - (macro_beg + 1));
+		size_t colon_pos = replacing.find(':');
+
+		std::string name;
+		if (colon_pos == std::string_view::npos)
+			name = replacing;
+		else
+			name = replacing.substr(0, colon_pos);
+
+		std::string value;
+		for (const std::pair<std::string, std::string> &macro : macros)
+		{
+			if (_stricmp(name.c_str(), macro.first.c_str()) == 0)
+			{
+				value = macro.second;
+				break;
+			}
+		}
+
+		// Allow using environment variables alongside macros
+		if (value.empty())
+		{
+			char buf[512] = "";
+			size_t buf_len = 0;
+			if (getenv_s(&buf_len, buf, sizeof(buf) - 1, name.c_str()) == 0)
+				value = buf;
+		}
+
+		if (colon_pos == std::string_view::npos)
+		{
+			result += value;
+		}
+		else
+		{
+			std::string_view param = replacing.substr(colon_pos + 1);
+
+			if (const size_t insert_pos = param.find('$');
+				insert_pos != std::string_view::npos)
+			{
+				result += param.substr(0, insert_pos);
+				result += value;
+				result += param.substr(insert_pos + 1);
+			}
+			else
+			{
+				result += param;
+			}
+		}
+	}
+
+	return result;
+}
+std::string expand_macro_string(const std::string &input, std::vector<std::pair<std::string, std::string>> macros, std::chrono::system_clock::time_point now)
+{
+	const auto now_seconds = std::chrono::time_point_cast<std::chrono::seconds>(now);
+
+	char timestamp[21];
+	const std::time_t t = std::chrono::system_clock::to_time_t(now_seconds);
+	struct tm tm; localtime_s(&tm, &t);
+
+	std::snprintf(timestamp, std::size(timestamp), "%.4d-%.2d-%.2d", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday);
+	macros.emplace_back("Date", timestamp);
+	std::snprintf(timestamp, std::size(timestamp), "%.4d", tm.tm_year + 1900);
+	macros.emplace_back("DateYear", timestamp);
+	macros.emplace_back("Year", timestamp);
+	std::snprintf(timestamp, std::size(timestamp), "%.2d", tm.tm_mon + 1);
+	macros.emplace_back("DateMonth", timestamp);
+	macros.emplace_back("Month", timestamp);
+	std::snprintf(timestamp, std::size(timestamp), "%.2d", tm.tm_mday);
+	macros.emplace_back("DateDay", timestamp);
+	macros.emplace_back("Day", timestamp);
+
+	std::snprintf(timestamp, std::size(timestamp), "%.2d-%.2d-%.2d", tm.tm_hour, tm.tm_min, tm.tm_sec);
+	macros.emplace_back("Time", timestamp);
+	std::snprintf(timestamp, std::size(timestamp), "%.2d", tm.tm_hour);
+	macros.emplace_back("TimeHour", timestamp);
+	macros.emplace_back("Hour", timestamp);
+	std::snprintf(timestamp, std::size(timestamp), "%.2d", tm.tm_min);
+	macros.emplace_back("TimeMinute", timestamp);
+	macros.emplace_back("Minute", timestamp);
+	std::snprintf(timestamp, std::size(timestamp), "%.2d", tm.tm_sec);
+	macros.emplace_back("TimeSecond", timestamp);
+	macros.emplace_back("Second", timestamp);
+	std::snprintf(timestamp, std::size(timestamp), "%.3lld", std::chrono::duration_cast<std::chrono::milliseconds>(now - now_seconds).count());
+	macros.emplace_back("TimeMillisecond", timestamp);
+	macros.emplace_back("Millisecond", timestamp);
+	macros.emplace_back("TimeMS", timestamp);
+
+	return expand_macro_string(input, macros);
+}
+
+bool resolve_path(std::filesystem::path &path, std::error_code &ec, const std::filesystem::path &base = g_reshade_base_path)
+{
+	path = std::filesystem::u8path(expand_macro_string(path.u8string()));
+
 	// First convert path to an absolute path
 	// Ignore the working directory and instead start relative paths at the DLL location
 	if (path.is_relative())
-		path = g_reshade_base_path / path;
+		path = base / path;
 	// Finally try to canonicalize the path too
 	if (std::filesystem::path canonical_path = std::filesystem::canonical(path, ec); !ec)
 		path = std::move(canonical_path);
 	else
 		path = path.lexically_normal();
+
 	return !ec; // The canonicalization step fails if the path does not exist
 }
 
@@ -187,7 +307,7 @@ reshade::runtime::runtime(api::swapchain *swapchain, api::command_queue *graphic
 	_texture_search_paths({ L".\\" }),
 	_config_path(config_path),
 	_screenshot_path(L".\\"),
-	_screenshot_name("%AppName% %Date% %Time%_%TimeMS%"), // Include milliseconds by default because users may request more than one screenshot per second
+	_screenshot_name("%AppName% %Date% %Time%_%Count%"), // Ensure unique naming with screenshot count because users may request more than one screenshot per second
 	_screenshot_post_save_command_arguments("\"%TargetPath%\""),
 	_screenshot_post_save_command_working_directory(L".\\")
 {
@@ -299,7 +419,7 @@ bool reshade::runtime::on_init()
 			usage |= api::resource_usage::copy_source;
 
 		if (!_device->create_resource(
-				api::resource_desc(_width, _height, 1, 1, api::format_to_typeless(_back_buffer_format), 1, api::memory_heap::gpu_only, usage),
+				api::resource_desc(_width, _height, 1, 1, api::format_to_typeless(_back_buffer_format), 1, api::memory_heap::default_, usage),
 				nullptr, back_buffer_desc.texture.samples == 1 ? api::resource_usage::copy_dest : api::resource_usage::resolve_dest, &_back_buffer_resolved) ||
 			!_device->create_resource_view(
 				_back_buffer_resolved,
@@ -363,7 +483,7 @@ bool reshade::runtime::on_init()
 	{
 		// Use VK_FORMAT_R16_SFLOAT format, since it is mandatory according to the spec (see https://www.khronos.org/registry/vulkan/specs/1.1/html/vkspec.html#features-required-format-support)
 		if (!_device->create_resource(
-				api::resource_desc(1, 1, 1, 1, api::format::r16_float, 1, api::memory_heap::gpu_only, api::resource_usage::shader_resource),
+				api::resource_desc(1, 1, 1, 1, api::format::r16_float, 1, api::memory_heap::default_, api::resource_usage::shader_resource),
 				nullptr, api::resource_usage::shader_resource, &_empty_tex))
 		{
 			log::message(log::level::error, "Failed to create empty texture resource!");
@@ -2264,7 +2384,7 @@ bool reshade::runtime::create_effect(size_t effect_index, size_t permutation_ind
 		if (permutation_index == 0)
 		{
 			if (!_device->create_resource(
-					api::resource_desc(effect.uniform_data_storage.size(), api::memory_heap::cpu_to_gpu, api::resource_usage::constant_buffer),
+					api::resource_desc(effect.uniform_data_storage.size(), api::memory_heap::upload, api::resource_usage::constant_buffer),
 					nullptr, api::resource_usage::cpu_access, &effect.cb))
 			{
 				log::message(log::level::error, "Failed to create constant buffer for effect file '%s'!", effect.source_file.u8string().c_str());
@@ -3130,7 +3250,7 @@ bool reshade::runtime::create_texture(texture &tex)
 		}
 	}
 
-	if (!_device->create_resource(api::resource_desc(type, tex.width, tex.height, tex.depth, tex.levels, format, 1, api::memory_heap::gpu_only, usage, flags), initial_data.data(), api::resource_usage::shader_resource, &tex.resource))
+	if (!_device->create_resource(api::resource_desc(type, tex.width, tex.height, tex.depth, tex.levels, format, 1, api::memory_heap::default_, usage, flags), initial_data.data(), api::resource_usage::shader_resource, &tex.resource))
 	{
 		log::message(log::level::error, "Failed to create texture '%s' (width = %u, height = %u, levels = %hu, format = %u, usage = %#x)! Make sure the texture dimensions are reasonable.", tex.unique_name.c_str(), tex.width, tex.height, tex.levels, static_cast<uint32_t>(format), static_cast<uint32_t>(usage));
 		return false;
@@ -3502,7 +3622,7 @@ auto reshade::runtime::add_effect_permutation(uint32_t width, uint32_t height, a
 	permutation.color_format = color_format;
 
 	if (!_device->create_resource(
-			api::resource_desc(width, height, 1, 1, api::format_to_typeless(color_format), 1, api::memory_heap::gpu_only, api::resource_usage::copy_dest | api::resource_usage::shader_resource),
+			api::resource_desc(width, height, 1, 1, api::format_to_typeless(color_format), 1, api::memory_heap::default_, api::resource_usage::copy_dest | api::resource_usage::shader_resource),
 			nullptr, api::resource_usage::shader_resource, &permutation.color_tex))
 	{
 		log::message(log::level::error, "Failed to create effect color resource (width = %u, height = %u, format = %u)!", width, height, static_cast<uint32_t>(api::format_to_typeless(color_format)));
@@ -3520,7 +3640,7 @@ auto reshade::runtime::add_effect_permutation(uint32_t width, uint32_t height, a
 
 	if (stencil_format != api::format::unknown &&
 		_device->create_resource(
-			api::resource_desc(width, height, 1, 1, stencil_format, 1, api::memory_heap::gpu_only, api::resource_usage::depth_stencil),
+			api::resource_desc(width, height, 1, 1, stencil_format, 1, api::memory_heap::default_, api::resource_usage::depth_stencil),
 			nullptr, api::resource_usage::depth_stencil_write, &permutation.stencil_tex))
 	{
 		permutation.stencil_format = stencil_format;
@@ -4672,110 +4792,6 @@ template <> void reshade::runtime::set_uniform_value<uint32_t>(uniform &variable
 	}
 }
 
-static std::string expand_macro_string(const std::string &input, std::vector<std::pair<std::string, std::string>> macros, std::chrono::system_clock::time_point now)
-{
-	const auto now_seconds = std::chrono::time_point_cast<std::chrono::seconds>(now);
-
-	char timestamp[21];
-	const std::time_t t = std::chrono::system_clock::to_time_t(now_seconds);
-	struct tm tm; localtime_s(&tm, &t);
-
-	std::snprintf(timestamp, std::size(timestamp), "%.4d-%.2d-%.2d", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday);
-	macros.emplace_back("Date", timestamp);
-	std::snprintf(timestamp, std::size(timestamp), "%.4d", tm.tm_year + 1900);
-	macros.emplace_back("DateYear", timestamp);
-	macros.emplace_back("Year", timestamp);
-	std::snprintf(timestamp, std::size(timestamp), "%.2d", tm.tm_mon + 1);
-	macros.emplace_back("DateMonth", timestamp);
-	macros.emplace_back("Month", timestamp);
-	std::snprintf(timestamp, std::size(timestamp), "%.2d", tm.tm_mday);
-	macros.emplace_back("DateDay", timestamp);
-	macros.emplace_back("Day", timestamp);
-
-	std::snprintf(timestamp, std::size(timestamp), "%.2d-%.2d-%.2d", tm.tm_hour, tm.tm_min, tm.tm_sec);
-	macros.emplace_back("Time", timestamp);
-	std::snprintf(timestamp, std::size(timestamp), "%.2d", tm.tm_hour);
-	macros.emplace_back("TimeHour", timestamp);
-	macros.emplace_back("Hour", timestamp);
-	std::snprintf(timestamp, std::size(timestamp), "%.2d", tm.tm_min);
-	macros.emplace_back("TimeMinute", timestamp);
-	macros.emplace_back("Minute", timestamp);
-	std::snprintf(timestamp, std::size(timestamp), "%.2d", tm.tm_sec);
-	macros.emplace_back("TimeSecond", timestamp);
-	macros.emplace_back("Second", timestamp);
-	std::snprintf(timestamp, std::size(timestamp), "%.3lld", std::chrono::duration_cast<std::chrono::milliseconds>(now - now_seconds).count());
-	macros.emplace_back("TimeMillisecond", timestamp);
-	macros.emplace_back("Millisecond", timestamp);
-	macros.emplace_back("TimeMS", timestamp);
-
-	std::string result;
-
-	for (size_t offset = 0, macro_beg, macro_end; offset < input.size(); offset = macro_end + 1)
-	{
-		macro_beg = input.find('%', offset);
-		macro_end = input.find('%', macro_beg + 1);
-
-		if (macro_beg == std::string::npos || macro_end == std::string::npos)
-		{
-			result += input.substr(offset);
-			break;
-		}
-		else
-		{
-			result += input.substr(offset, macro_beg - offset);
-
-			if (macro_end == macro_beg + 1) // Handle case of %% to escape percentage symbol
-			{
-				result += '%';
-				continue;
-			}
-		}
-
-		std::string_view replacing(input);
-		replacing = replacing.substr(macro_beg + 1, macro_end - (macro_beg + 1));
-		size_t colon_pos = replacing.find(':');
-
-		std::string name;
-		if (colon_pos == std::string_view::npos)
-			name = replacing;
-		else
-			name = replacing.substr(0, colon_pos);
-
-		std::string value;
-		for (const std::pair<std::string, std::string> &macro : macros)
-		{
-			if (_stricmp(name.c_str(), macro.first.c_str()) == 0)
-			{
-				value = macro.second;
-				break;
-			}
-		}
-
-		if (colon_pos == std::string_view::npos)
-		{
-			result += value;
-		}
-		else
-		{
-			std::string_view param = replacing.substr(colon_pos + 1);
-
-			if (const size_t insert_pos = param.find('$');
-				insert_pos != std::string_view::npos)
-			{
-				result += param.substr(0, insert_pos);
-				result += value;
-				result += param.substr(insert_pos + 1);
-			}
-			else
-			{
-				result += param;
-			}
-		}
-	}
-
-	return result;
-}
-
 void reshade::runtime::save_screenshot(const char *postfix_in)
 {
 	std::string postfix;
@@ -5111,7 +5127,7 @@ bool reshade::runtime::get_texture_data(api::resource resource, api::resource_us
 
 	// Copy back buffer data into system memory buffer
 	api::resource intermediate;
-	if (!_device->create_resource(api::resource_desc(desc.texture.width, desc.texture.height, 1, 1, intermediate_format, 1, api::memory_heap::gpu_to_cpu, api::resource_usage::copy_dest), nullptr, api::resource_usage::copy_dest, &intermediate))
+	if (!_device->create_resource(api::resource_desc(desc.texture.width, desc.texture.height, 1, 1, intermediate_format, 1, api::memory_heap::readback, api::resource_usage::copy_dest), nullptr, api::resource_usage::copy_dest, &intermediate))
 	{
 		log::message(log::level::error, "Failed to create system memory texture for screenshot capture!");
 		return false;
