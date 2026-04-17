@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup Label="ProjectConfigurations">
     <ProjectConfiguration Include="Debug|Win32">
@@ -265,7 +265,7 @@
       <FloatingPointModel>Fast</FloatingPointModel>
       <RuntimeTypeInfo>false</RuntimeTypeInfo>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
-      <AdditionalOptions>/Zc:threadSafeInit- /utf-8 /arch:AVX2 %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalOptions>/Zc:threadSafeInit- /utf-8 /EHsc /arch:AVX2 %(AdditionalOptions)</AdditionalOptions>
       <AdditionalOptions Condition="'$(VisualStudioVersion)'&gt;='16.0'">/Zc:char8_t- %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
@@ -307,7 +307,7 @@
       <FloatingPointModel>Fast</FloatingPointModel>
       <RuntimeTypeInfo>false</RuntimeTypeInfo>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
-      <AdditionalOptions>/Zc:threadSafeInit- /utf-8 /arch:AVX2 %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalOptions>/Zc:threadSafeInit- /utf-8 /EHsc /arch:AVX2 %(AdditionalOptions)</AdditionalOptions>
       <AdditionalOptions Condition="'$(VisualStudioVersion)'&gt;='16.0'">/Zc:char8_t- %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
@@ -348,7 +348,7 @@
       <FloatingPointModel>Fast</FloatingPointModel>
       <RuntimeTypeInfo>false</RuntimeTypeInfo>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
-      <AdditionalOptions>/Zc:threadSafeInit- /utf-8 /arch:AVX2 %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalOptions>/Zc:threadSafeInit- /utf-8 /EHsc /arch:AVX2 %(AdditionalOptions)</AdditionalOptions>
       <AdditionalOptions Condition="'$(VisualStudioVersion)'&gt;='16.0'">/Zc:char8_t- %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
@@ -388,7 +388,7 @@
       <FloatingPointModel>Fast</FloatingPointModel>
       <RuntimeTypeInfo>false</RuntimeTypeInfo>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
-      <AdditionalOptions>/Zc:threadSafeInit- /utf-8 /arch:AVX2 %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalOptions>/Zc:threadSafeInit- /utf-8 /EHsc /arch:AVX2 %(AdditionalOptions)</AdditionalOptions>
       <AdditionalOptions Condition="'$(VisualStudioVersion)'&gt;='16.0'">/Zc:char8_t- %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
@@ -429,7 +429,7 @@
       <FloatingPointModel>Fast</FloatingPointModel>
       <RuntimeTypeInfo>false</RuntimeTypeInfo>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
-      <AdditionalOptions>/Zc:threadSafeInit- /utf-8 /arch:AVX2 %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalOptions>/Zc:threadSafeInit- /utf-8 /EHsc /arch:AVX2 %(AdditionalOptions)</AdditionalOptions>
       <AdditionalOptions Condition="'$(VisualStudioVersion)'&gt;='16.0'">/Zc:char8_t- %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
@@ -474,7 +474,7 @@
       <FloatingPointModel>Fast</FloatingPointModel>
       <RuntimeTypeInfo>false</RuntimeTypeInfo>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
-      <AdditionalOptions>/Zc:threadSafeInit- /utf-8 /arch:AVX2 %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalOptions>/Zc:threadSafeInit- /utf-8 /EHsc /arch:AVX2 %(AdditionalOptions)</AdditionalOptions>
       <AdditionalOptions Condition="'$(VisualStudioVersion)'&gt;='16.0'">/Zc:char8_t- %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
