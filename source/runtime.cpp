@@ -342,7 +342,7 @@ reshade::runtime::runtime(api::swapchain *swapchain, api::command_queue *graphic
 	else
 		log::message(log::level::info, "Running on %s.", device_description);
 
-	check_for_update();
+	//check_for_update();
 
 	// Default shortcut PrtScrn
 	_screenshot_key_data[0] = 0x2C;
@@ -960,7 +960,7 @@ void reshade::runtime::on_present()
 	if (!ini_file::flush_cache())
 		_preset_save_successful = false;
 
-#if RESHADE_ADDON == 1
+/*#if RESHADE_ADDON == 1
 	// Detect high network traffic
 	extern volatile long g_network_traffic;
 
@@ -993,7 +993,7 @@ void reshade::runtime::on_present()
 
 	if (std::numeric_limits<long>::max() != g_network_traffic)
 		g_network_traffic = 0;
-#endif
+#endif*/
 }
 
 void reshade::runtime::load_config()
@@ -3494,7 +3494,7 @@ void reshade::runtime::reload_effects(bool force_load_all)
 
 #if RESHADE_GUI
 	_preset_is_modified = false;
-	_show_splash = true; // Always show splash bar when reloading everything
+	_show_splash = false; // Always hide splash bar when reloading everything
 	_reload_count++;
 #endif
 	_last_reload_successful = true;
