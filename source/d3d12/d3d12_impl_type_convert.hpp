@@ -17,6 +17,11 @@ namespace reshade::d3d12
 	static_assert(sizeof(D3D12_VIEWPORT) == sizeof(api::viewport));
 	static_assert(sizeof(D3D12_GPU_DESCRIPTOR_HANDLE) == sizeof(api::descriptor_table));
 
+	struct resource_extra_data
+	{
+		D3D12_SUBRESOURCE_FOOTPRINT footprint;
+	};
+
 	struct pipeline_extra_data
 	{
 		D3D12_PRIMITIVE_TOPOLOGY topology;
@@ -30,7 +35,6 @@ namespace reshade::d3d12
 
 	struct query_heap_extra_data
 	{
-		api::query_type type;
 		UINT count;
 		ID3D12Resource *readback_resource;
 		std::pair<ID3D12Fence *, UINT64> *fences;
@@ -78,7 +82,6 @@ namespace reshade::d3d12
 	api::sampler_desc convert_sampler_desc(const D3D12_SAMPLER_DESC &internal_desc);
 	api::sampler_desc convert_sampler_desc(const D3D12_SAMPLER_DESC2 &internal_desc);
 	api::sampler_desc convert_sampler_desc(const D3D12_STATIC_SAMPLER_DESC &internal_desc);
-	api::sampler_desc convert_sampler_desc(const D3D12_STATIC_SAMPLER_DESC1 &internal_desc);
 
 	void convert_resource_desc(const api::resource_desc &desc, D3D12_RESOURCE_DESC &internal_desc, D3D12_HEAP_PROPERTIES &heap_props, D3D12_HEAP_FLAGS &heap_flags);
 	void convert_resource_desc(const api::resource_desc &desc, D3D12_RESOURCE_DESC1 &internal_desc, D3D12_HEAP_PROPERTIES &heap_props, D3D12_HEAP_FLAGS &heap_flags);
@@ -156,16 +159,27 @@ namespace reshade::d3d12
 	auto convert_query_heap_type_to_type(D3D12_QUERY_HEAP_TYPE type) -> api::query_type;
 
 	auto convert_descriptor_type(api::descriptor_type type) -> D3D12_DESCRIPTOR_RANGE_TYPE;
+	auto convert_descriptor_type(D3D12_ROOT_PARAMETER_TYPE type) -> api::descriptor_type;
 	auto convert_descriptor_type(D3D12_DESCRIPTOR_RANGE_TYPE type) -> api::descriptor_type;
 	auto convert_descriptor_type_to_heap_type(api::descriptor_type type) -> D3D12_DESCRIPTOR_HEAP_TYPE;
+	auto convert_descriptor_range_flags(api::descriptor_range_flags value) -> D3D12_DESCRIPTOR_RANGE_FLAGS;
+	auto convert_descriptor_range_flags(D3D12_ROOT_DESCRIPTOR_FLAGS value) -> api::descriptor_range_flags;
+	auto convert_descriptor_range_flags(D3D12_DESCRIPTOR_RANGE_FLAGS value) -> api::descriptor_range_flags;
 
 	auto convert_shader_visibility(api::shader_stage value) -> D3D12_SHADER_VISIBILITY;
 	auto convert_shader_visibility(D3D12_SHADER_VISIBILITY value) -> api::shader_stage;
 
+	auto convert_render_pass_flags(api::render_pass_flags value) -> D3D12_RENDER_PASS_FLAGS;
+	auto convert_render_pass_flags(D3D12_RENDER_PASS_FLAGS value) -> api::render_pass_flags;
 	auto convert_render_pass_load_op(api::render_pass_load_op value) -> D3D12_RENDER_PASS_BEGINNING_ACCESS_TYPE;
 	auto convert_render_pass_load_op(D3D12_RENDER_PASS_BEGINNING_ACCESS_TYPE value) -> api::render_pass_load_op;
 	auto convert_render_pass_store_op(api::render_pass_store_op value) -> D3D12_RENDER_PASS_ENDING_ACCESS_TYPE;
 	auto convert_render_pass_store_op(D3D12_RENDER_PASS_ENDING_ACCESS_TYPE value) -> api::render_pass_store_op;
+
+	void convert_render_pass_render_target_desc(const api::render_pass_render_target_desc &desc, api::format clear_format, D3D12_RENDER_PASS_RENDER_TARGET_DESC &internal_desc);
+	api::render_pass_render_target_desc convert_render_pass_render_target_desc(const D3D12_RENDER_PASS_RENDER_TARGET_DESC &internal_desc);
+	void convert_render_pass_depth_stencil_desc(const api::render_pass_depth_stencil_desc &desc, api::format clear_format, D3D12_RENDER_PASS_DEPTH_STENCIL_DESC &internal_desc);
+	api::render_pass_depth_stencil_desc convert_render_pass_depth_stencil_desc(const D3D12_RENDER_PASS_DEPTH_STENCIL_DESC &internal_desc);
 
 	auto convert_fence_flags(api::fence_flags value) -> D3D12_FENCE_FLAGS;
 

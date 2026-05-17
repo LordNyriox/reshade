@@ -579,34 +579,46 @@ reshade::api::resource_view_desc reshade::d3d11::device_impl::get_resource_view_
 	if (com_ptr<ID3D11ShaderResourceView1> object;
 		SUCCEEDED(reinterpret_cast<IUnknown *>(view.handle)->QueryInterface(&object)))
 	{
+		com_ptr<ID3D11Resource> resource;
+		object->GetResource(&resource);
+
 		D3D11_SHADER_RESOURCE_VIEW_DESC1 internal_desc;
 		object->GetDesc1(&internal_desc);
 
-		return convert_resource_view_desc(internal_desc);
+		return convert_resource_view_desc(resource.get(), internal_desc);
 	}
 	if (com_ptr<ID3D11ShaderResourceView> object;
 		SUCCEEDED(reinterpret_cast<IUnknown *>(view.handle)->QueryInterface(&object)))
 	{
+		com_ptr<ID3D11Resource> resource;
+		object->GetResource(&resource);
+
 		D3D11_SHADER_RESOURCE_VIEW_DESC internal_desc;
 		object->GetDesc(&internal_desc);
 
-		return convert_resource_view_desc(internal_desc);
+		return convert_resource_view_desc(resource.get(), internal_desc);
 	}
 	if (com_ptr<ID3D11UnorderedAccessView1> object;
 		SUCCEEDED(reinterpret_cast<IUnknown *>(view.handle)->QueryInterface(&object)))
 	{
+		com_ptr<ID3D11Resource> resource;
+		object->GetResource(&resource);
+
 		D3D11_UNORDERED_ACCESS_VIEW_DESC1 internal_desc;
 		object->GetDesc1(&internal_desc);
 
-		return convert_resource_view_desc(internal_desc);
+		return convert_resource_view_desc(resource.get(), internal_desc);
 	}
 	if (com_ptr<ID3D11UnorderedAccessView> object;
 		SUCCEEDED(reinterpret_cast<IUnknown *>(view.handle)->QueryInterface(&object)))
 	{
+		com_ptr<ID3D11Resource> resource;
+		object->GetResource(&resource);
+
 		D3D11_UNORDERED_ACCESS_VIEW_DESC internal_desc;
 		object->GetDesc(&internal_desc);
 
-		return convert_resource_view_desc(internal_desc);
+		return convert_resource_view_desc(resource.get(), internal_desc);
 	}
 
 	assert(false); // Not implemented
@@ -1406,7 +1418,7 @@ void reshade::d3d11::device_impl::destroy_query_heap(api::query_heap heap)
 	delete reinterpret_cast<query_heap_impl *>(heap.handle);
 }
 
-bool reshade::d3d11::device_impl::get_query_heap_results(api::query_heap heap, uint32_t first, uint32_t count, void *results, uint32_t stride)
+bool reshade::d3d11::device_impl::get_query_heap_results(api::query_heap heap, api::query_type, uint32_t first, uint32_t count, void *results, uint32_t stride)
 {
 	assert(heap != 0);
 

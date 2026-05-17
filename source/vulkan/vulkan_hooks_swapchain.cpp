@@ -199,6 +199,7 @@ VkResult VKAPI_CALL vkCreateSwapchainKHR(VkDevice device, const VkSwapchainCreat
 	desc.present_mode = static_cast<uint32_t>(create_info.presentMode);
 	desc.present_flags = create_info.flags;
 	desc.sync_interval = create_info.presentMode == VK_PRESENT_MODE_IMMEDIATE_KHR ? 0 : UINT32_MAX;
+	desc.color_space = reshade::vulkan::convert_color_space(create_info.imageColorSpace);
 
 #if VK_EXT_full_screen_exclusive
 	// Optionally change fullscreen state
@@ -220,6 +221,7 @@ VkResult VKAPI_CALL vkCreateSwapchainKHR(VkDevice device, const VkSwapchainCreat
 	if (reshade::invoke_addon_event<reshade::addon_event::create_swapchain>(reshade::api::device_api::vulkan, desc, hwnd))
 	{
 		create_info.imageFormat = reshade::vulkan::convert_format(desc.back_buffer.texture.format);
+		create_info.imageColorSpace = reshade::vulkan::convert_color_space(desc.color_space);
 		create_info.imageExtent.width = desc.back_buffer.texture.width;
 		create_info.imageExtent.height = desc.back_buffer.texture.height;
 		create_info.imageArrayLayers = desc.back_buffer.texture.depth_or_layers;
@@ -252,6 +254,15 @@ VkResult VKAPI_CALL vkCreateSwapchainKHR(VkDevice device, const VkSwapchainCreat
 
 		if (desc.sync_interval == 0)
 			create_info.presentMode = VK_PRESENT_MODE_IMMEDIATE_KHR;
+
+		// Remove format list info if format was overriden
+		if (const auto existing_format_list_info = find_in_structure_chain<VkImageFormatListCreateInfo>(
+				create_info.pNext, VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO))
+		{
+			if (std::find(existing_format_list_info->pViewFormats, existing_format_list_info->pViewFormats + existing_format_list_info->viewFormatCount, create_info.imageFormat) == (existing_format_list_info->pViewFormats + existing_format_list_info->viewFormatCount))
+				// This is evil, because potentially writing into application memory, but it is what it is
+				const_cast<VkImageFormatListCreateInfo *>(existing_format_list_info)->viewFormatCount = 0;
+		}
 	}
 #endif
 
