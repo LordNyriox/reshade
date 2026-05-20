@@ -50,18 +50,25 @@ static void parse_errors(const std::string_view errors, F &&callback)
 	{
 		const size_t pos_error = errors.find(": ", offset);
 		const size_t pos_error_line = errors.rfind('(', pos_error); // Paths can contain '(', but no ": ", so search backwards from the error location to find the line info
-		if (pos_error == std::string_view::npos || pos_error_line == std::string_view::npos || pos_error_line < offset)
+		if (pos_error == std::string_view::npos)
 			break;
 
 		const size_t pos_linefeed = errors.find('\n', pos_error);
 
+		if (pos_error_line != std::string_view::npos && pos_error_line >= offset)
+		{
+			const std::string_view error_file = errors.substr(offset, pos_error_line - offset);
+			const int error_line = static_cast<int>(std::strtol(errors.data() + pos_error_line + 1, nullptr, 10));
+			const std::string_view error_text = errors.substr(pos_error + 2 /* skip space */, pos_linefeed - pos_error - 2);
+
+			callback(error_file, error_line, error_text);
+		}
+		else
+		{
+			callback(std::string_view(), 0, errors.substr(offset, pos_linefeed - offset));
+		}
+
 		next = pos_linefeed != std::string_view::npos ? pos_linefeed + 1 : std::string_view::npos;
-
-		const std::string_view error_file = errors.substr(offset, pos_error_line - offset);
-		int error_line = static_cast<int>(std::strtol(errors.data() + pos_error_line + 1, nullptr, 10));
-		const std::string_view error_text = errors.substr(pos_error + 2 /* skip space */, pos_linefeed - pos_error - 2);
-
-		callback(error_file, error_line, error_text);
 	}
 }
 
@@ -151,13 +158,19 @@ void reshade::runtime::build_font_atlas()
 	if (language.empty())
 		language = resources::get_current_language();
 
-	if (language.find("bg") == 0 || language.find("pl") == 0 || language.find("ru") == 0 || language.find("sl") == 0 || language.find("tr") == 0 || language.find("th") == 0)
+	if (language.compare(0, 2, "ar") == 0 ||
+		language.compare(0, 2, "bg") == 0 ||
+		language.compare(0, 2, "pl") == 0 ||
+		language.compare(0, 2, "ru") == 0 ||
+		language.compare(0, 2, "sl") == 0 ||
+		language.compare(0, 2, "tr") == 0 ||
+		language.compare(0, 2, "th") == 0)
 	{
 		// Microsoft Sans Serif
 		_default_font_path = L"C:\\Windows\\Fonts\\micross.ttf";
 	}
 	else
-	if (language.find("ja") == 0)
+	if (language.compare(0, 2, "ja") == 0)
 	{
 		// Morisawa BIZ UDGothic Regular, available since Windows 10 October 2018 Update (1809) Build 17763.1
 		_default_font_path = L"C:\\Windows\\Fonts\\BIZ-UDGothicR.ttc";
@@ -166,13 +179,13 @@ void reshade::runtime::build_font_atlas()
 			_default_font_path = L"C:\\Windows\\Fonts\\msgothic.ttc";
 	}
 	else
-	if (language.find("ko") == 0)
+	if (language.compare(0, 2, "ko") == 0)
 	{
 		// Malgun Gothic
 		_default_font_path = L"C:\\Windows\\Fonts\\malgun.ttf";
 	}
 	else
-	if (language.find("zh") == 0)
+	if (language.compare(0, 2, "zh") == 0)
 	{
 		// Simplified Chinese (zh-CN, zh-SG, ...)
 		if (language.find("HK") == std::string::npos && language.find("TW") == std::string::npos && language.find("Hant") == std::string::npos)
@@ -2835,6 +2848,8 @@ void reshade::runtime::draw_gui_statistics()
 					[this](size_t effect_index) { return _effects[effect_index].rendering; }))
 				continue;
 
+			const texture_format_info format_info(tex.format);
+
 			ImGui::PushID(texture_count);
 			ImGui::BeginGroup();
 
@@ -2852,7 +2867,7 @@ void reshade::runtime::draw_gui_statistics()
 				ImGui::Text("%u | %u mipmap(s) | %s | %.3f MiB",
 					tex.width,
 					tex.levels - 1,
-					texture_format_info(tex.format).name,
+					format_info.name,
 					memory_size / memory_size_unit);
 				break;
 			case reshadefx::texture_type::texture_2d:
@@ -2860,7 +2875,7 @@ void reshade::runtime::draw_gui_statistics()
 					tex.width,
 					tex.height,
 					tex.levels - 1,
-					texture_format_info(tex.format).name,
+					format_info.name,
 					memory_size / memory_size_unit);
 				break;
 			case reshadefx::texture_type::texture_3d:
@@ -2869,7 +2884,7 @@ void reshade::runtime::draw_gui_statistics()
 					tex.height,
 					tex.depth,
 					tex.levels - 1,
-					texture_format_info(tex.format).name,
+					format_info.name,
 					memory_size / memory_size_unit);
 				break;
 			}
@@ -2999,13 +3014,13 @@ void reshade::runtime::draw_gui_statistics()
 				ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(1, 0, 0, 1));
 				imgui::toggle_button("R", r, 0.0f, ImGuiButtonFlags_AlignTextBaseLine);
 				ImGui::PopStyleColor();
-				if (texture_format_info(tex.format).components >= 2)
+				if (format_info.components >= 2)
 				{
 					ImGui::SameLine(0, 1);
 					ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0, 1, 0, 1));
 					imgui::toggle_button("G", g, 0.0f, ImGuiButtonFlags_AlignTextBaseLine);
 					ImGui::PopStyleColor();
-					if (texture_format_info(tex.format).components >= 3)
+					if (format_info.components >= 3)
 					{
 						ImGui::SameLine(0, 1);
 						ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0, 0, 1, 1));
@@ -3638,8 +3653,10 @@ void reshade::runtime::draw_variable_editor()
 					std::string category_label(get_localized_annotation(variable, "ui_category", _current_language));
 					if (!_variable_editor_tabs)
 					{
+						size_t num_spaces = 0;
 						for (float x = 0, space_x = ImGui::CalcTextSize(" ").x, width = (ImGui::CalcItemWidth() - ImGui::CalcTextSize(category_label.data()).x - 45) / 2; x < width; x += space_x)
-							category_label.insert(0, " ");
+							num_spaces++;
+						category_label.insert(0, num_spaces, ' ');
 						// Ensure widget ID does not change with varying width
 						category_label += "###" + current_category;
 						// Append a unique value so that the context menu does not contain duplicated widgets when a category is made current multiple times
@@ -4128,7 +4145,13 @@ void reshade::runtime::draw_technique_editor()
 			{
 				if (ImGui::BeginTooltip())
 				{
-					ImGui::TextUnformatted(effect.errors.c_str(), effect.errors.c_str() + effect.errors.size());
+					parse_errors(effect.errors,
+						[](const std::string_view file, int line, const std::string_view message) {
+							if (file.empty())
+								ImGui::TextUnformatted(message.data(), message.data() + message.size());
+							else
+								ImGui::Text("%s(%d): %.*s", std::filesystem::path(file).filename().u8string().c_str(), line, message.size(), message.data());
+						});
 					ImGui::EndTooltip();
 				}
 			}
@@ -4151,6 +4174,8 @@ void reshade::runtime::draw_technique_editor()
 					std::unordered_map<std::string_view, std::string> file_errors_lookup;
 					parse_errors(effect.errors,
 						[&file_errors_lookup](const std::string_view file, int line, const std::string_view message) {
+							if (file.empty())
+								return;
 							file_errors_lookup[file] += std::string(file) + '(' + std::to_string(line) + "): " + std::string(message) + '\n';
 						});
 
@@ -4608,7 +4633,7 @@ void reshade::runtime::open_code_editor(editor_instance &instance) const
 	parse_errors(effect.errors,
 		[&instance](const std::string_view file, int line, const std::string_view message) {
 			// Ignore errors that aren't in the current source file
-			if (file != instance.file_path.u8string())
+			if (file.empty() || file != instance.file_path.u8string())
 				return;
 
 			instance.editor.add_error(line, message, message.find("error") == std::string::npos);

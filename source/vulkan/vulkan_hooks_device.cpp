@@ -175,6 +175,7 @@ VkResult VKAPI_CALL vkCreateDevice(VkPhysicalDevice physicalDevice, const VkDevi
 	bool custom_border_color_ext = false;
 	bool conservative_rasterization_ext = false;
 	bool ray_tracing_ext = false;
+	bool descriptor_indexing_ext = false;
 
 	{
 		uint32_t num_extensions = 0;
@@ -335,9 +336,27 @@ VkResult VKAPI_CALL vkCreateDevice(VkPhysicalDevice physicalDevice, const VkDevi
 		const_cast<VkPhysicalDeviceVulkan12Features *>(existing_vulkan_12_features)->timelineSemaphore = VK_TRUE;
 
 		host_query_reset_ext = existing_vulkan_12_features->hostQueryReset;
+		descriptor_indexing_ext = existing_vulkan_12_features->descriptorIndexing;
 	}
 	else
 	{
+#if VK_EXT_descriptor_indexing
+		if (const auto existing_descriptor_indexing_features = find_in_structure_chain<VkPhysicalDeviceDescriptorIndexingFeatures>(
+				pCreateInfo->pNext, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES))
+		{
+			descriptor_indexing_ext = existing_descriptor_indexing_features->descriptorBindingPartiallyBound ||
+				existing_descriptor_indexing_features->descriptorBindingUniformBufferUpdateAfterBind ||
+				existing_descriptor_indexing_features->descriptorBindingSampledImageUpdateAfterBind ||
+				existing_descriptor_indexing_features->descriptorBindingStorageImageUpdateAfterBind ||
+				existing_descriptor_indexing_features->descriptorBindingStorageBufferUpdateAfterBind ||
+				existing_descriptor_indexing_features->descriptorBindingUniformTexelBufferUpdateAfterBind ||
+				existing_descriptor_indexing_features->descriptorBindingStorageTexelBufferUpdateAfterBind ||
+				existing_descriptor_indexing_features->descriptorBindingUpdateUnusedWhilePending ||
+				existing_descriptor_indexing_features->descriptorBindingVariableDescriptorCount ||
+				existing_descriptor_indexing_features->runtimeDescriptorArray;
+		}
+#endif
+
 		if (const auto existing_buffer_device_address_features = find_in_structure_chain<VkPhysicalDeviceBufferDeviceAddressFeatures>(
 				pCreateInfo->pNext, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES))
 		{
@@ -612,6 +631,9 @@ VkResult VKAPI_CALL vkCreateDevice(VkPhysicalDevice physicalDevice, const VkDevi
 #endif
 #if VK_EXT_conservative_rasterization
 	device.dispatch_table.EXT_conservative_rasterization &= conservative_rasterization_ext ? 1 : 0;
+#endif
+#if VK_EXT_descriptor_indexing
+	device.dispatch_table.EXT_descriptor_indexing &= descriptor_indexing_ext ? 1 : 0;
 #endif
 
 	if (instance.api_version < VK_API_VERSION_1_2)
@@ -1057,10 +1079,22 @@ VkResult VKAPI_CALL vkGetQueryPoolResults(VkDevice device, VkQueryPool queryPool
 	RESHADE_VULKAN_GET_DEVICE_DISPATCH_PTR(GetQueryPoolResults, device_impl);
 
 #if RESHADE_ADDON >= 2
-	assert(stride <= std::numeric_limits<uint32_t>::max());
+	if (reshade::has_addon_event<reshade::addon_event::get_query_heap_results>())
+	{
+		const auto pool_data = device_impl->get_private_data_for_object<VK_OBJECT_TYPE_QUERY_POOL>(queryPool);
 
-	if (reshade::invoke_addon_event<reshade::addon_event::get_query_heap_results>(device_impl, reshade::api::query_heap { (uint64_t)queryPool }, firstQuery, queryCount, pData, static_cast<uint32_t>(stride)))
-		return VK_SUCCESS;
+		assert(stride <= std::numeric_limits<uint32_t>::max());
+
+		if (reshade::invoke_addon_event<reshade::addon_event::get_query_heap_results>(
+				device_impl,
+				reshade::api::query_heap { (uint64_t)queryPool },
+				reshade::vulkan::convert_query_type(pool_data->type),
+				firstQuery,
+				queryCount,
+				pData,
+				static_cast<uint32_t>(stride)))
+			return VK_SUCCESS;
+	}
 #endif
 
 	return trampoline(device, queryPool, firstQuery, queryCount, dataSize, pData, stride, flags);
@@ -1191,13 +1225,13 @@ VkResult VKAPI_CALL vkCreateImage(VkDevice device, const VkImageCreateInfo *pCre
 		reshade::vulkan::convert_resource_desc(desc, create_info);
 		pCreateInfo = &create_info;
 
-		if (const auto format_list_info = find_in_structure_chain<VkImageFormatListCreateInfo>(
-				pCreateInfo->pNext, VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO))
+		// Remove format list info if format was overriden
+		if (const auto existing_format_list_info = find_in_structure_chain<VkImageFormatListCreateInfo>(
+				create_info.pNext, VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO))
 		{
-			// Remove format list info if format was overriden
-			if (std::find(format_list_info->pViewFormats, format_list_info->pViewFormats + format_list_info->viewFormatCount, create_info.format) == (format_list_info->pViewFormats + format_list_info->viewFormatCount))
+			if (std::find(existing_format_list_info->pViewFormats, existing_format_list_info->pViewFormats + existing_format_list_info->viewFormatCount, create_info.format) == (existing_format_list_info->pViewFormats + existing_format_list_info->viewFormatCount))
 				// This is evil, because writing into application memory, but it is what it is
-				const_cast<VkImageFormatListCreateInfo *>(format_list_info)->viewFormatCount = 0;
+				const_cast<VkImageFormatListCreateInfo *>(existing_format_list_info)->viewFormatCount = 0;
 		}
 	}
 #endif
@@ -1891,6 +1925,12 @@ void     VKAPI_CALL vkDestroyPipeline(VkDevice device, VkPipeline pipeline, cons
 
 #if RESHADE_ADDON >= 2
 	reshade::invoke_addon_event<reshade::addon_event::destroy_pipeline>(device_impl, reshade::api::pipeline { (uint64_t)pipeline });
+
+	if (pAllocator == nullptr)
+	{
+		device_impl->destroy_pipeline(reshade::api::pipeline { (uint64_t)pipeline });
+		return;
+	}
 #endif
 
 	trampoline(device, pipeline, pAllocator);
@@ -1905,6 +1945,7 @@ VkResult VKAPI_CALL vkCreatePipelineLayout(VkDevice device, const VkPipelineLayo
 
 	VkResult result = VK_SUCCESS;
 #if RESHADE_ADDON >= 2
+	bool created_via_addon_event = false;
 	const uint32_t set_desc_count = pCreateInfo->setLayoutCount;
 	uint32_t param_count = set_desc_count + pCreateInfo->pushConstantRangeCount;
 
@@ -1919,11 +1960,11 @@ VkResult VKAPI_CALL vkCreatePipelineLayout(VkDevice device, const VkPipelineLayo
 
 		if (set_layout_impl->push_descriptors)
 		{
-			if (!set_layout_impl->ranges_with_static_samplers.empty())
+			if (!set_layout_impl->ranges_with_flags.empty())
 			{
-				params[i].type = reshade::api::pipeline_layout_param_type::push_descriptors_with_static_samplers;
-				params[i].descriptor_table_with_static_samplers.count = static_cast<uint32_t>(set_layout_impl->ranges_with_static_samplers.size());
-				params[i].descriptor_table_with_static_samplers.ranges = set_layout_impl->ranges_with_static_samplers.data();
+				params[i].type = reshade::api::pipeline_layout_param_type::push_descriptors_with_ranges_and_flags;
+				params[i].descriptor_table_with_flags.count = static_cast<uint32_t>(set_layout_impl->ranges_with_flags.size());
+				params[i].descriptor_table_with_flags.ranges = set_layout_impl->ranges_with_flags.data();
 			}
 			else if (set_layout_impl->ranges.size() == 1)
 			{
@@ -1939,11 +1980,11 @@ VkResult VKAPI_CALL vkCreatePipelineLayout(VkDevice device, const VkPipelineLayo
 		}
 		else
 		{
-			if (!set_layout_impl->ranges_with_static_samplers.empty())
+			if (!set_layout_impl->ranges_with_flags.empty())
 			{
-				params[i].type = reshade::api::pipeline_layout_param_type::descriptor_table_with_static_samplers;
-				params[i].descriptor_table_with_static_samplers.count = static_cast<uint32_t>(set_layout_impl->ranges_with_static_samplers.size());
-				params[i].descriptor_table_with_static_samplers.ranges = set_layout_impl->ranges_with_static_samplers.data();
+				params[i].type = reshade::api::pipeline_layout_param_type::descriptor_table_with_flags;
+				params[i].descriptor_table_with_flags.count = static_cast<uint32_t>(set_layout_impl->ranges_with_flags.size());
+				params[i].descriptor_table_with_flags.ranges = set_layout_impl->ranges_with_flags.data();
 			}
 			else
 			{
@@ -1974,6 +2015,7 @@ VkResult VKAPI_CALL vkCreatePipelineLayout(VkDevice device, const VkPipelineLayo
 		assert(pCreateInfo->pNext == nullptr); // 'device_impl::create_pipeline_layout' does not support extension structures
 
 		result = device_impl->create_pipeline_layout(param_count, param_data, reinterpret_cast<reshade::api::pipeline_layout *>(pPipelineLayout)) ? VK_SUCCESS : VK_ERROR_OUT_OF_HOST_MEMORY;
+		created_via_addon_event = result == VK_SUCCESS;
 	}
 	else
 #endif
@@ -1990,8 +2032,12 @@ VkResult VKAPI_CALL vkCreatePipelineLayout(VkDevice device, const VkPipelineLayo
 	}
 
 #if RESHADE_ADDON >= 2
-	reshade::vulkan::object_data<VK_OBJECT_TYPE_PIPELINE_LAYOUT> &data = *device_impl->register_object<VK_OBJECT_TYPE_PIPELINE_LAYOUT>(*pPipelineLayout);
-	data.set_layouts.assign(pCreateInfo->pSetLayouts, pCreateInfo->pSetLayouts + pCreateInfo->setLayoutCount);
+	if (!created_via_addon_event)
+	{
+		reshade::vulkan::object_data<VK_OBJECT_TYPE_PIPELINE_LAYOUT> &data = *device_impl->register_object<VK_OBJECT_TYPE_PIPELINE_LAYOUT>(*pPipelineLayout);
+		data.set_layouts.assign(pCreateInfo->pSetLayouts, pCreateInfo->pSetLayouts + pCreateInfo->setLayoutCount);
+		data.owns_set_layouts = false;
+	}
 
 	reshade::invoke_addon_event<reshade::addon_event::init_pipeline_layout>(device_impl, param_count, param_data, reshade::api::pipeline_layout { (uint64_t)*pPipelineLayout });
 #endif
@@ -2009,11 +2055,12 @@ void     VKAPI_CALL vkDestroyPipelineLayout(VkDevice device, VkPipelineLayout pi
 #if RESHADE_ADDON >= 2
 	reshade::invoke_addon_event<reshade::addon_event::destroy_pipeline_layout>(device_impl, reshade::api::pipeline_layout { (uint64_t)pipelineLayout });
 
-	reshade::vulkan::object_data<VK_OBJECT_TYPE_PIPELINE_LAYOUT> &data = *device_impl->get_private_data_for_object<VK_OBJECT_TYPE_PIPELINE_LAYOUT>(pipelineLayout);
-
-	// Clean up any samplers that may have been created when an add-on modified the creation of the pipeline layout
-	for (const VkSampler sampler : data.embedded_samplers)
-		device_impl->destroy_sampler({ (uint64_t)sampler });
+	if (pAllocator == nullptr)
+	{
+		// Clean up any samplers and descriptor set layouts that may have been created when an add-on modified the creation of the pipeline layout
+		device_impl->destroy_pipeline_layout(reshade::api::pipeline_layout { (uint64_t)pipelineLayout });
+		return;
+	}
 
 	device_impl->unregister_object<VK_OBJECT_TYPE_PIPELINE_LAYOUT>(pipelineLayout);
 #endif
@@ -2103,9 +2150,9 @@ VkResult VKAPI_CALL vkCreateDescriptorSetLayout(VkDevice device, const VkDescrip
 		const auto binding_flags_info = find_in_structure_chain<VkDescriptorSetLayoutBindingFlagsCreateInfo>(
 				pCreateInfo->pNext, VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO);
 
-		bool has_static_samplers = false;
+		bool has_static_samplers_or_flags = false;
 
-		data.ranges_with_static_samplers.resize(pCreateInfo->bindingCount);
+		data.ranges_with_flags.resize(pCreateInfo->bindingCount);
 		data.static_samplers.resize(pCreateInfo->bindingCount);
 		data.binding_to_offset.reserve(pCreateInfo->bindingCount);
 
@@ -2118,14 +2165,14 @@ VkResult VKAPI_CALL vkCreateDescriptorSetLayout(VkDevice device, const VkDescrip
 
 			if ((binding.descriptorType == VK_DESCRIPTOR_TYPE_SAMPLER || binding.descriptorType == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) && binding.pImmutableSamplers != nullptr)
 			{
-				has_static_samplers = true;
+				has_static_samplers_or_flags = true;
 
 				for (uint32_t k = 0; k < binding.descriptorCount; ++k)
 					data.static_samplers[i].push_back(reshade::vulkan::convert_sampler_desc(
 						device_impl->get_private_data_for_object<VK_OBJECT_TYPE_SAMPLER>(binding.pImmutableSamplers[k])->create_info));
 			}
 
-			reshade::api::descriptor_range_with_static_samplers &range = data.ranges_with_static_samplers[i];
+			reshade::api::descriptor_range_with_flags &range = data.ranges_with_flags[i];
 			range.binding = binding.binding;
 			range.dx_register_index = 0;
 			range.dx_register_space = 0;
@@ -2133,11 +2180,15 @@ VkResult VKAPI_CALL vkCreateDescriptorSetLayout(VkDevice device, const VkDescrip
 			range.visibility = static_cast<reshade::api::shader_stage>(binding.stageFlags);
 			range.array_size = binding.descriptorCount;
 			range.type = reshade::vulkan::convert_descriptor_type(binding.descriptorType);
+			range.flags = reshade::api::descriptor_range_flags::none;
 			range.static_samplers = data.static_samplers[i].data();
 
 			if (binding_flags_info != nullptr && i < binding_flags_info->bindingCount)
 			{
+				has_static_samplers_or_flags = true;
+
 				const VkDescriptorBindingFlags binding_flags = binding_flags_info->pBindingFlags[i];
+				range.flags = reshade::vulkan::convert_descriptor_range_flags(binding_flags);
 
 				if ((binding_flags & VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT) != 0)
 					range.count = UINT32_MAX;
@@ -2149,10 +2200,10 @@ VkResult VKAPI_CALL vkCreateDescriptorSetLayout(VkDevice device, const VkDescrip
 		for (size_t i = 1; i < data.binding_to_offset.size(); ++i)
 			data.binding_to_offset[i] += data.binding_to_offset[i - 1];
 
-		if (!has_static_samplers)
+		if (!has_static_samplers_or_flags)
 		{
-			data.ranges.assign(data.ranges_with_static_samplers.begin(), data.ranges_with_static_samplers.end());
-			data.ranges_with_static_samplers.clear();
+			data.ranges.assign(data.ranges_with_flags.begin(), data.ranges_with_flags.end());
+			data.ranges_with_flags.clear();
 			data.static_samplers.clear();
 		}
 	}
