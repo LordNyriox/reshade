@@ -2,13 +2,18 @@ name: build
 
 on:
   push:
-    branches:
-      - main
+#    branches:
+#      - main
   pull_request:
     branches:
       - main
+  workflow_dispatch:
 
 permissions: {}
+
+concurrency:  # Cancel running jobs if new commits are pushed
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -19,11 +24,12 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
+          allow-unsafe-pr-checkout: false
           fetch-depth: 0
           persist-credentials: false
-          submodules: true
+          submodules: recursive
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -45,20 +51,23 @@ jobs:
         run: |
           msbuild ReShade.sln /p:Configuration="Release Setup"
 
-      - name: Upload ReShade (32-bit)
-        uses: actions/upload-artifact@v7
-        with:
-          name: ReShade (32-bit)
-          path: './bin/Win32/Release/ReShade32.dll'
+#      - name: Upload ReShade (32-bit)
+#        uses: actions/upload-artifact@v7
+#        with:
+#          archive: false
+#          name: ReShade (32-bit)
+#          path: './bin/Win32/Release/ReShade32.dll'
 
-      - name: Upload ReShade (64-bit)
-        uses: actions/upload-artifact@v7
-        with:
-          name: ReShade (64-bit)
-          path: './bin/x64/Release/ReShade64.dll'
+#      - name: Upload ReShade (64-bit)
+#        uses: actions/upload-artifact@v7
+#        with:
+#          archive: false
+#          name: ReShade (64-bit)
+#          path: './bin/x64/Release/ReShade64.dll'
 
       - name: Upload ReShade Setup
         uses: actions/upload-artifact@v7
         with:
+          archive: false
           name: ReShade Setup
           path: './bin/AnyCPU/Release/ReShade Setup.exe'
