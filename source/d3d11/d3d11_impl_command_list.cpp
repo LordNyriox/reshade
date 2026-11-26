@@ -282,9 +282,9 @@ void reshade::d3d11::device_context_impl::bind_pipeline_states(uint32_t count, c
 		case api::dynamic_state::blend_constant:
 			if (const float blend_constant[4] = {
 					((values[i]      ) & 0xFF) / 255.0f,
-					((values[i] >>  4) & 0xFF) / 255.0f,
 					((values[i] >>  8) & 0xFF) / 255.0f,
-					((values[i] >> 12) & 0xFF) / 255.0f
+					((values[i] >> 16) & 0xFF) / 255.0f,
+					((values[i] >> 24) & 0xFF) / 255.0f
 				};
 				i + 1 < count &&
 				states[i + 1] == api::dynamic_state::sample_mask)
@@ -432,6 +432,9 @@ void reshade::d3d11::device_context_impl::bind_constant_buffers(api::shader_stag
 		assert(buffer_ranges[i].offset <= std::numeric_limits<UINT>::max() && (buffer_ranges[i].offset % (16 * 16)) == 0);
 		first_constant[i] = static_cast<UINT>(buffer_ranges[i].offset / 16);
 
+		if (buffer_ranges[i].offset != 0)
+			whole_range = false;
+
 		if (buffer_ranges[i].size != UINT64_MAX)
 		{
 			whole_range = false;
@@ -444,7 +447,9 @@ void reshade::d3d11::device_context_impl::bind_constant_buffers(api::shader_stag
 			{
 				D3D11_BUFFER_DESC desc;
 				buffer_ptrs[i]->GetDesc(&desc);
-				constant_count[i] = desc.ByteWidth / 16;
+				assert(buffer_ranges[i].offset < desc.ByteWidth);
+				// Number of constants has to be a multiple of 16 and is limited to the maximum constant buffer size
+				constant_count[i] = std::min((static_cast<UINT>((desc.ByteWidth - buffer_ranges[i].offset) / 16) + 15u) & ~15u, static_cast<UINT>(D3D11_REQ_CONSTANT_BUFFER_ELEMENT_COUNT));
 			}
 			else
 			{
@@ -710,7 +715,7 @@ void reshade::d3d11::device_context_impl::copy_buffer_region(api::resource src, 
 	{
 		D3D11_BUFFER_DESC desc;
 		reinterpret_cast<ID3D11Buffer *>(src.handle)->GetDesc(&desc);
-		size = desc.ByteWidth;
+		size = desc.ByteWidth - src_offset;
 	}
 
 	assert(src_offset <= std::numeric_limits<UINT>::max() && dst_offset <= std::numeric_limits<UINT>::max() && size <= std::numeric_limits<UINT>::max());
@@ -817,18 +822,16 @@ void reshade::d3d11::device_context_impl::update_buffer_region(const void *data,
 {
 	assert(dst != 0);
 
+	D3D11_BUFFER_DESC desc;
+	reinterpret_cast<ID3D11Buffer *>(dst.handle)->GetDesc(&desc);
 	if (UINT64_MAX == size)
-	{
-		D3D11_BUFFER_DESC desc;
-		reinterpret_cast<ID3D11Buffer *>(dst.handle)->GetDesc(&desc);
-		size = desc.ByteWidth;
-	}
+		size = desc.ByteWidth - dst_offset;
 
 	assert(dst_offset <= std::numeric_limits<UINT>::max() && size <= std::numeric_limits<UINT>::max());
 
 	const D3D11_BOX box = { static_cast<UINT>(dst_offset), 0, 0, static_cast<UINT>(dst_offset + size), 1, 1 };
 
-	_orig->UpdateSubresource(reinterpret_cast<ID3D11Resource *>(dst.handle), 0, dst_offset != 0 ? &box : nullptr, data, static_cast<UINT>(size), 0);
+	_orig->UpdateSubresource(reinterpret_cast<ID3D11Resource *>(dst.handle), 0, dst_offset == 0 && size == desc.ByteWidth ? nullptr : &box, data, static_cast<UINT>(size), 0);
 }
 void reshade::d3d11::device_context_impl::update_texture_region(const api::subresource_data &data, api::resource dst, uint32_t dst_subresource, const api::subresource_box *dst_box)
 {

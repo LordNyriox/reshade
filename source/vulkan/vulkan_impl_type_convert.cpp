@@ -3,9 +3,9 @@
  * SPDX-License-Identifier: BSD-3-Clause
  */
 
-#include "vulkan_hooks.hpp"
 #include "vulkan_impl_type_convert.hpp"
-#include <algorithm> // std::copy_n, std::fill_n, std::find_if, std::max
+#include <cassert>
+#include <algorithm> // std::copy_n, std::fill_n, std::find_if, std::max, std::sort, std::unique
 
 auto reshade::vulkan::convert_format(api::format format, VkComponentMapping *components) -> VkFormat
 {
@@ -207,10 +207,10 @@ auto reshade::vulkan::convert_format(api::format format, VkComponentMapping *com
 	case api::format::r32g32b32a32_float:
 		return VK_FORMAT_R32G32B32A32_SFLOAT;
 
-	case api::format::r9g9b9e5:
-		return VK_FORMAT_E5B9G9R9_UFLOAT_PACK32;
-	case api::format::r11g11b10_float:
-		return VK_FORMAT_B10G11R11_UFLOAT_PACK32;
+	case api::format::b4g4r4a4_unorm:
+		return VK_FORMAT_A4R4G4B4_UNORM_PACK16;
+	case api::format::a4b4g4r4_unorm:
+		return VK_FORMAT_A4B4G4R4_UNORM_PACK16;
 	case api::format::b5g6r5_unorm:
 		return VK_FORMAT_R5G6B5_UNORM_PACK16;
 	case api::format::b5g5r5x1_unorm:
@@ -219,10 +219,10 @@ auto reshade::vulkan::convert_format(api::format format, VkComponentMapping *com
 		[[fallthrough]];
 	case api::format::b5g5r5a1_unorm:
 		return VK_FORMAT_A1R5G5B5_UNORM_PACK16;
-	case api::format::b4g4r4a4_unorm:
-		return VK_FORMAT_A4R4G4B4_UNORM_PACK16;
-	case api::format::a4b4g4r4_unorm:
-		return VK_FORMAT_A4B4G4R4_UNORM_PACK16;
+	case api::format::r9g9b9e5:
+		return VK_FORMAT_E5B9G9R9_UFLOAT_PACK32;
+	case api::format::r11g11b10_float:
+		return VK_FORMAT_B10G11R11_UFLOAT_PACK32;
 
 	case api::format::s8_uint:
 		return VK_FORMAT_S8_UINT;
@@ -488,10 +488,10 @@ auto reshade::vulkan::convert_format(VkFormat vk_format, const VkComponentMappin
 	case VK_FORMAT_R32G32B32A32_SFLOAT:
 		return api::format::r32g32b32a32_float;
 
-	case VK_FORMAT_E5B9G9R9_UFLOAT_PACK32:
-		return api::format::r9g9b9e5;
-	case VK_FORMAT_B10G11R11_UFLOAT_PACK32:
-		return api::format::r11g11b10_float;
+	case VK_FORMAT_A4R4G4B4_UNORM_PACK16:
+		return api::format::b4g4r4a4_unorm;
+	case VK_FORMAT_A4B4G4R4_UNORM_PACK16:
+		return api::format::a4b4g4r4_unorm;
 	case VK_FORMAT_R5G6B5_UNORM_PACK16:
 		return api::format::b5g6r5_unorm;
 	case VK_FORMAT_A1R5G5B5_UNORM_PACK16:
@@ -502,10 +502,10 @@ auto reshade::vulkan::convert_format(VkFormat vk_format, const VkComponentMappin
 			components->a == VK_COMPONENT_SWIZZLE_ONE)
 			return api::format::b5g5r5x1_unorm;
 		return api::format::b5g5r5a1_unorm;
-	case VK_FORMAT_A4R4G4B4_UNORM_PACK16:
-		return api::format::b4g4r4a4_unorm;
-	case VK_FORMAT_A4B4G4R4_UNORM_PACK16:
-		return api::format::a4b4g4r4_unorm;
+	case VK_FORMAT_E5B9G9R9_UFLOAT_PACK32:
+		return api::format::r9g9b9e5;
+	case VK_FORMAT_B10G11R11_UFLOAT_PACK32:
+		return api::format::r11g11b10_float;
 
 	case VK_FORMAT_D16_UNORM:
 		return api::format::d16_unorm;
@@ -673,11 +673,11 @@ auto reshade::vulkan::convert_access_to_usage(VkAccessFlags2 flags) -> api::reso
 		result |= api::resource_usage::vertex_buffer;
 	if ((flags & VK_ACCESS_UNIFORM_READ_BIT) != 0)
 		result |= api::resource_usage::constant_buffer;
-	if ((flags & VK_ACCESS_SHADER_READ_BIT) != 0)
+	if ((flags & (VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_SAMPLED_READ_BIT)) != 0)
 		result |= api::resource_usage::shader_resource;
-	if ((flags & VK_ACCESS_SHADER_WRITE_BIT) != 0)
+	if ((flags & (VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT)) != 0)
 		result |= api::resource_usage::unordered_access;
-	if ((flags & (VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT)) != 0)
+	if ((flags & (VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT)) != 0)
 		result |= api::resource_usage::render_target;
 	if ((flags & VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT) != 0)
 		result |= api::resource_usage::depth_stencil_read;
@@ -830,9 +830,9 @@ auto reshade::vulkan::convert_usage_to_pipeline_stage(api::resource_usage state,
 		result |= VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
 	if ((state & api::resource_usage::render_target) != 0)
 		result |= VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-	if ((state & (api::resource_usage::shader_resource_pixel | api::resource_usage::constant_buffer)) != 0)
+	if ((state & (api::resource_usage::shader_resource_pixel | api::resource_usage::constant_buffer | api::resource_usage::unordered_access)) != 0)
 		result |= VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-	if ((state & (api::resource_usage::shader_resource_non_pixel | api::resource_usage::constant_buffer)) != 0)
+	if ((state & (api::resource_usage::shader_resource_non_pixel | api::resource_usage::constant_buffer | api::resource_usage::unordered_access)) != 0)
 	{
 		result |= VK_PIPELINE_STAGE_VERTEX_SHADER_BIT;
 		if (enabled_features.tessellationShader)
@@ -845,8 +845,6 @@ auto reshade::vulkan::convert_usage_to_pipeline_stage(api::resource_usage state,
 			result |= VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR | VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR;
 #endif
 	}
-	if ((state & api::resource_usage::unordered_access) != 0)
-		result |= VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
 	if ((state & (api::resource_usage::copy_dest | api::resource_usage::copy_source | api::resource_usage::resolve_dest | api::resource_usage::resolve_source)) != 0)
 		result |= VK_PIPELINE_STAGE_TRANSFER_BIT;
 #if VK_KHR_acceleration_structure
@@ -860,14 +858,12 @@ auto reshade::vulkan::convert_usage_to_pipeline_stage(api::resource_usage state,
 void reshade::vulkan::convert_usage_to_image_usage_flags(api::resource_usage usage, VkImageUsageFlags &image_flags)
 {
 	if ((usage & api::resource_usage::depth_stencil) != 0)
-		// Add transfer destination usage as well to support clearing via 'vkCmdClearDepthStencilImage'
-		image_flags |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+		image_flags |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
 	else
 		image_flags &= ~VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
 
 	if ((usage & api::resource_usage::render_target) != 0)
-		// Add transfer destination usage as well to support clearing via 'vkCmdClearColorImage'
-		image_flags |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+		image_flags |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
 	else
 		image_flags &= ~VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
 
@@ -881,7 +877,9 @@ void reshade::vulkan::convert_usage_to_image_usage_flags(api::resource_usage usa
 	else
 		image_flags &= ~VK_IMAGE_USAGE_STORAGE_BIT;
 
-	if ((usage & (api::resource_usage::copy_dest | api::resource_usage::resolve_dest)) != 0)
+	if ((usage & (api::resource_usage::copy_dest | api::resource_usage::resolve_dest)) != 0 ||
+		// Add transfer destination usage as well to support clearing via 'vkCmdClearColorImage' or 'vkCmdClearDepthStencilImage'
+		((usage & (api::resource_usage::depth_stencil | api::resource_usage::render_target)) != 0 && (image_flags & VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT) == 0))
 		image_flags |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
 	else
 		image_flags &= ~VK_IMAGE_USAGE_TRANSFER_DST_BIT;
@@ -1282,9 +1280,11 @@ reshade::api::sampler_desc reshade::vulkan::convert_sampler_desc(const VkSampler
 	{
 	case VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK:
 	case VK_BORDER_COLOR_INT_TRANSPARENT_BLACK:
+		std::fill_n(desc.border_color, 4, 0.0f);
 		break;
 	case VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK:
 	case VK_BORDER_COLOR_INT_OPAQUE_BLACK:
+		std::fill_n(desc.border_color, 3, 0.0f);
 		desc.border_color[3] = 1.0f;
 		break;
 	case VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE:
@@ -1293,13 +1293,13 @@ reshade::api::sampler_desc reshade::vulkan::convert_sampler_desc(const VkSampler
 		break;
 #if VK_EXT_custom_border_color
 	case VK_BORDER_COLOR_FLOAT_CUSTOM_EXT:
-		assert(border_color_info != nullptr);
-		std::copy_n(border_color_info->customBorderColor.float32, 4, desc.border_color);
+		if (border_color_info != nullptr)
+			std::copy_n(border_color_info->customBorderColor.float32, 4, desc.border_color);
 		break;
 	case VK_BORDER_COLOR_INT_CUSTOM_EXT:
-		assert(border_color_info != nullptr);
-		for (int i = 0; i < 4; ++i)
-			desc.border_color[i] = static_cast<float>(border_color_info->customBorderColor.int32[i]);
+		if (border_color_info != nullptr)
+			for (int i = 0; i < 4; ++i)
+				desc.border_color[i] = static_cast<float>(border_color_info->customBorderColor.int32[i]);
 		break;
 #endif
 	}
@@ -1646,6 +1646,9 @@ void reshade::vulkan::convert_dynamic_states(uint32_t count, const api::dynamic_
 		case api::dynamic_state::primitive_topology:
 			internal_states.push_back(VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY);
 			break;
+		case api::dynamic_state::input_element_stride:
+			internal_states.push_back(VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE);
+			break;
 		case api::dynamic_state::depth_enable:
 			internal_states.push_back(VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE);
 			break;
@@ -1709,6 +1712,10 @@ void reshade::vulkan::convert_dynamic_states(uint32_t count, const api::dynamic_
 			break;
 		}
 	}
+
+	// Remove duplicates
+	std::sort(internal_states.begin(), internal_states.end());
+	internal_states.erase(std::unique(internal_states.begin(), internal_states.end()), internal_states.end());
 }
 std::vector<reshade::api::dynamic_state> reshade::vulkan::convert_dynamic_states(const VkPipelineDynamicStateCreateInfo *create_info)
 {
@@ -1729,6 +1736,8 @@ std::vector<reshade::api::dynamic_state> reshade::vulkan::convert_dynamic_states
 			break;
 		case VK_DYNAMIC_STATE_BLEND_CONSTANTS:
 			states.push_back(api::dynamic_state::blend_constant);
+			break;
+		case VK_DYNAMIC_STATE_DEPTH_BOUNDS:
 			break;
 		case VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK:
 			states.push_back(api::dynamic_state::front_stencil_read_mask);
@@ -1751,6 +1760,9 @@ std::vector<reshade::api::dynamic_state> reshade::vulkan::convert_dynamic_states
 		case VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY:
 			states.push_back(api::dynamic_state::primitive_topology);
 			break;
+		case VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE:
+			states.push_back(api::dynamic_state::input_element_stride);
+			break;
 		case VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE:
 			states.push_back(api::dynamic_state::depth_enable);
 			break;
@@ -1760,6 +1772,8 @@ std::vector<reshade::api::dynamic_state> reshade::vulkan::convert_dynamic_states
 		case VK_DYNAMIC_STATE_DEPTH_COMPARE_OP:
 			states.push_back(api::dynamic_state::depth_func);
 			break;
+		case VK_DYNAMIC_STATE_DEPTH_BOUNDS_TEST_ENABLE:
+			break;
 		case VK_DYNAMIC_STATE_STENCIL_TEST_ENABLE:
 			states.push_back(api::dynamic_state::stencil_enable);
 			break;
@@ -1767,14 +1781,17 @@ std::vector<reshade::api::dynamic_state> reshade::vulkan::convert_dynamic_states
 			states.push_back(api::dynamic_state::front_stencil_func);
 			states.push_back(api::dynamic_state::back_stencil_func);
 			break;
+		case VK_DYNAMIC_STATE_RASTERIZER_DISCARD_ENABLE:
+			break;
 		case VK_DYNAMIC_STATE_DEPTH_BIAS_ENABLE:
-			states.push_back(api::dynamic_state::depth_bias);
-			states.push_back(api::dynamic_state::depth_bias_clamp);
-			states.push_back(api::dynamic_state::depth_bias_slope_scaled);
+			break;
+		case VK_DYNAMIC_STATE_PRIMITIVE_RESTART_ENABLE:
 			break;
 #if VK_EXT_extended_dynamic_state2
 		case VK_DYNAMIC_STATE_LOGIC_OP_EXT:
 			states.push_back(api::dynamic_state::logic_op);
+			break;
+		case VK_DYNAMIC_STATE_DEPTH_CLAMP_ENABLE_EXT:
 			break;
 		case VK_DYNAMIC_STATE_POLYGON_MODE_EXT:
 			states.push_back(api::dynamic_state::fill_mode);
@@ -2020,9 +2037,12 @@ reshade::api::rasterizer_desc reshade::vulkan::convert_rasterizer_desc(const VkP
 		desc.fill_mode = convert_fill_mode(create_info->polygonMode);
 		desc.cull_mode = convert_cull_mode(create_info->cullMode);
 		desc.front_counter_clockwise = create_info->frontFace == VK_FRONT_FACE_COUNTER_CLOCKWISE;
-		desc.depth_bias = create_info->depthBiasConstantFactor;
-		desc.depth_bias_clamp = create_info->depthBiasClamp;
-		desc.slope_scaled_depth_bias = create_info->depthBiasSlopeFactor;
+		if (create_info->depthBiasEnable)
+		{
+			desc.depth_bias = create_info->depthBiasConstantFactor;
+			desc.depth_bias_clamp = create_info->depthBiasClamp;
+			desc.slope_scaled_depth_bias = create_info->depthBiasSlopeFactor;
+		}
 		desc.depth_clip_enable = !create_info->depthClampEnable;
 		desc.scissor_enable = true;
 
@@ -2562,7 +2582,7 @@ void reshade::vulkan::convert_render_pass_depth_stencil_desc(const api::render_p
 reshade::api::render_pass_depth_stencil_desc reshade::vulkan::convert_render_pass_depth_stencil_desc(const VkRenderingAttachmentInfo *depth_attachment_info, const VkRenderingAttachmentInfo *stencil_attachment_info)
 {
 	api::render_pass_depth_stencil_desc desc;
-	if (depth_attachment_info != nullptr)
+	if (depth_attachment_info != nullptr && depth_attachment_info->imageView != VK_NULL_HANDLE)
 	{
 		desc.view = { (uint64_t)depth_attachment_info->imageView };
 		desc.depth_load_op = convert_render_pass_load_op(depth_attachment_info->loadOp);
@@ -2575,9 +2595,9 @@ reshade::api::render_pass_depth_stencil_desc reshade::vulkan::convert_render_pas
 		desc.depth_store_op = api::render_pass_store_op::discard;
 		desc.clear_depth = 0.0f;
 	}
-	if (stencil_attachment_info != nullptr)
+	if (stencil_attachment_info != nullptr && stencil_attachment_info->imageView != VK_NULL_HANDLE)
 	{
-		assert(depth_attachment_info == nullptr || depth_attachment_info->imageView == stencil_attachment_info->imageView);
+		assert(depth_attachment_info == nullptr || depth_attachment_info->imageView == VK_NULL_HANDLE || depth_attachment_info->imageView == stencil_attachment_info->imageView);
 
 		desc.view = { (uint64_t)stencil_attachment_info->imageView };
 		desc.stencil_load_op = convert_render_pass_load_op(stencil_attachment_info->loadOp);
@@ -2719,23 +2739,23 @@ void reshade::vulkan::convert_acceleration_structure_build_input(const api::acce
 	case VK_GEOMETRY_TYPE_TRIANGLES_KHR:
 		geometry.geometry.triangles = { VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR };
 		geometry.geometry.triangles.vertexFormat = convert_format(build_input.triangles.vertex_format);
-		geometry.geometry.triangles.vertexData.deviceAddress = build_input.triangles.vertex_offset;
+		geometry.geometry.triangles.vertexData.deviceAddress = build_input.triangles.vertex_gpu_address;
 		geometry.geometry.triangles.vertexStride = build_input.triangles.vertex_stride;
-		geometry.geometry.triangles.maxVertex = build_input.triangles.vertex_count;
+		geometry.geometry.triangles.maxVertex = build_input.triangles.vertex_count != 0 ? build_input.triangles.vertex_count - 1 : 0;
 		geometry.geometry.triangles.indexType = build_input.triangles.index_format == api::format::r8_uint ? VK_INDEX_TYPE_UINT8 : build_input.triangles.index_format == api::format::r16_uint ? VK_INDEX_TYPE_UINT16 : build_input.triangles.index_format == api::format::r32_uint ? VK_INDEX_TYPE_UINT32 : VK_INDEX_TYPE_NONE_KHR;
-		geometry.geometry.triangles.indexData.deviceAddress = build_input.triangles.index_offset;
-		geometry.geometry.triangles.transformData.deviceAddress = build_input.triangles.transform_offset;
-		range_info.primitiveCount = geometry.geometry.triangles.indexData.deviceAddress != 0 ? build_input.triangles.index_count / 3 : build_input.triangles.vertex_count / 3;
+		geometry.geometry.triangles.indexData.deviceAddress = build_input.triangles.index_gpu_address;
+		geometry.geometry.triangles.transformData.deviceAddress = build_input.triangles.transform_gpu_address;
+		range_info.primitiveCount = build_input.triangles.index_count != 0 ? build_input.triangles.index_count / 3 : build_input.triangles.vertex_count / 3;
 		break;
 	case VK_GEOMETRY_TYPE_AABBS_KHR:
 		geometry.geometry.aabbs = { VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_AABBS_DATA_KHR };
-		geometry.geometry.aabbs.data.deviceAddress = build_input.aabbs.offset;
+		geometry.geometry.aabbs.data.deviceAddress = build_input.aabbs.gpu_address;
 		geometry.geometry.aabbs.stride = build_input.aabbs.stride;
 		range_info.primitiveCount = build_input.aabbs.count;
 		break;
 	case VK_GEOMETRY_TYPE_INSTANCES_KHR:
 		geometry.geometry.instances = { VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR };
-		geometry.geometry.instances.data.deviceAddress = build_input.instances.offset;
+		geometry.geometry.instances.data.deviceAddress = build_input.instances.gpu_address;
 		geometry.geometry.instances.arrayOfPointers = build_input.instances.array_of_pointers ? VK_TRUE : VK_FALSE;
 		range_info.primitiveCount = build_input.instances.count;
 		break;
@@ -2755,22 +2775,23 @@ reshade::api::acceleration_structure_build_input reshade::vulkan::convert_accele
 	switch (geometry.geometryType)
 	{
 	case VK_GEOMETRY_TYPE_TRIANGLES_KHR:
-		build_input.triangles.vertex_offset = geometry.geometry.triangles.vertexData.deviceAddress + range_info.primitiveOffset + range_info.firstVertex * geometry.geometry.triangles.vertexStride;
-		build_input.triangles.vertex_count = geometry.geometry.triangles.indexData.deviceAddress == 0 ? range_info.primitiveCount * 3 : geometry.geometry.triangles.maxVertex;
+		// Primitive offset applies to the index data for indexed geometry and to the vertex data otherwise
+		build_input.triangles.vertex_gpu_address = geometry.geometry.triangles.vertexData.deviceAddress + (geometry.geometry.triangles.indexData.deviceAddress == 0 ? range_info.primitiveOffset : 0) + range_info.firstVertex * geometry.geometry.triangles.vertexStride;
+		build_input.triangles.vertex_count = geometry.geometry.triangles.indexData.deviceAddress == 0 ? range_info.primitiveCount * 3 : geometry.geometry.triangles.maxVertex + 1;
 		build_input.triangles.vertex_stride = geometry.geometry.triangles.vertexStride;
 		build_input.triangles.vertex_format = convert_format(geometry.geometry.triangles.vertexFormat);
-		build_input.triangles.index_offset = geometry.geometry.triangles.indexData.deviceAddress;
+		build_input.triangles.index_gpu_address = geometry.geometry.triangles.indexData.deviceAddress != 0 ? geometry.geometry.triangles.indexData.deviceAddress + range_info.primitiveOffset : 0;
 		build_input.triangles.index_count = geometry.geometry.triangles.indexData.deviceAddress != 0 ? range_info.primitiveCount * 3 : 0;
 		build_input.triangles.index_format = geometry.geometry.triangles.indexType == VK_INDEX_TYPE_UINT8 ? api::format::r8_uint : geometry.geometry.triangles.indexType == VK_INDEX_TYPE_UINT16 ? api::format::r16_uint : geometry.geometry.triangles.indexType == VK_INDEX_TYPE_UINT32 ? api::format::r32_uint : api::format::unknown;
-		build_input.triangles.transform_offset = geometry.geometry.triangles.transformData.deviceAddress + range_info.transformOffset;
+		build_input.triangles.transform_gpu_address = geometry.geometry.triangles.transformData.deviceAddress + range_info.transformOffset;
 		break;
 	case VK_GEOMETRY_TYPE_AABBS_KHR:
-		build_input.aabbs.offset = geometry.geometry.aabbs.data.deviceAddress;
+		build_input.aabbs.gpu_address = geometry.geometry.aabbs.data.deviceAddress + range_info.primitiveOffset;
 		build_input.aabbs.count = range_info.primitiveCount;
 		build_input.aabbs.stride = geometry.geometry.aabbs.stride;
 		break;
 	case VK_GEOMETRY_TYPE_INSTANCES_KHR:
-		build_input.instances.offset = geometry.geometry.instances.data.deviceAddress;
+		build_input.instances.gpu_address = geometry.geometry.instances.data.deviceAddress + range_info.primitiveOffset;
 		build_input.instances.count = range_info.primitiveCount;
 		build_input.instances.array_of_pointers = geometry.geometry.instances.arrayOfPointers != VK_FALSE;
 		break;

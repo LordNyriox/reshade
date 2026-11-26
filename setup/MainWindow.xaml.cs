@@ -423,7 +423,7 @@ namespace ReShade.Setup
 					CurrentPage.Navigate(status);
 				}
 
-				AeroGlass.HideSystemMenu(this, true);
+				DWM.HideSystemMenu(this, true);
 			});
 
 			if (isHeadless)
@@ -446,7 +446,7 @@ namespace ReShade.Setup
 					Title += success ? " was successful!" : " was not successful!";
 				}
 
-				AeroGlass.HideSystemMenu(this, false);
+				DWM.HideSystemMenu(this, false);
 			});
 
 			if (isHeadless)
@@ -684,6 +684,16 @@ namespace ReShade.Setup
 				return;
 			}
 
+			if (peInfo.StackSize != 0 && peInfo.StackSize < 1000000 && !executableName.Equals("gamelaunchhelper.exe", StringComparison.OrdinalIgnoreCase))
+			{
+				UpdateStatus("Waiting for user confirmation ...");
+
+				Dispatcher.Invoke(() =>
+				{
+					MessageBox.Show(this, "The target application uses a small default stack size.\nIn order to use ReShade without crashing you'll have to patch the executable to increase the stack size from " + peInfo.StackSize + " bytes to at least 1 MB.", "Warning", MessageBoxButton.OK, MessageBoxImage.Warning);
+				});
+			}
+
 			if (compatibilityIni != null && compatibilityIni.HasValue(executableName, "RenderApi"))
 			{
 				if (compatibilityIni.HasValue(executableName, "InstallTarget"))
@@ -914,7 +924,7 @@ namespace ReShade.Setup
 				{
 					if (GetModuleProductName(currentInfo.modulePath) == "ReShade")
 					{
-						if (isHeadless)
+						if (isHeadless || File.GetAttributes(currentInfo.modulePath).HasFlag(FileAttributes.ReparsePoint))
 						{
 							UpdateStatusAndFinish(false, "Existing ReShade installation found. Please uninstall it first.");
 							return;
@@ -939,7 +949,7 @@ namespace ReShade.Setup
 
 				if (currentOperation == InstallOperation.Install && GetModuleProductName(conflictingModulePath) == "ReShade")
 				{
-					if (isHeadless)
+					if (isHeadless || File.GetAttributes(conflictingModulePath).HasFlag(FileAttributes.ReparsePoint))
 					{
 						UpdateStatusAndFinish(false, "Existing ReShade installation for another API found.\nMultiple simultaneous ReShade installations are not supported. Please uninstall the existing one first.");
 					}
@@ -1804,8 +1814,8 @@ In that event here are some steps you can try to resolve this:
 
 		void OnWindowInit(object sender, EventArgs e)
 		{
-			AeroGlass.HideIcon(this);
-			AeroGlass.HideSystemMenu(this, currentInfo.targetPath != null);
+			DWM.HideIcon(this);
+			DWM.HideSystemMenu(this, currentInfo.targetPath != null);
 		}
 
 		void OnNextButtonClick(object sender, RoutedEventArgs e)

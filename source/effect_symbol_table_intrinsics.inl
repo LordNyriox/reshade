@@ -720,7 +720,7 @@ IMPLEMENT_INTRINSIC_SPIRV(clamp, 2, {
 	return
 	add_instruction(spv::OpExtInst, convert_type(res_type))
 		.add(_glsl_ext)
-		.add(spv::GLSLstd450FClamp)
+		.add(spv::GLSLstd450NClamp)
 		.add(args[0].base)
 		.add(args[1].base)
 		.add(args[2].base);
@@ -744,7 +744,7 @@ IMPLEMENT_INTRINSIC_SPIRV(saturate, 0, {
 	return
 	add_instruction(spv::OpExtInst, convert_type(res_type))
 		.add(_glsl_ext)
-		.add(spv::GLSLstd450FClamp)
+		.add(spv::GLSLstd450NClamp)
 		.add(args[0].base)
 		.add(constant_zero)
 		.add(constant_one);
@@ -1158,7 +1158,7 @@ DEFINE_INTRINSIC(round, 0, float2, float2)
 DEFINE_INTRINSIC(round, 0, float3, float3)
 DEFINE_INTRINSIC(round, 0, float4, float4)
 IMPLEMENT_INTRINSIC_GLSL(round, 0, {
-	code += "round(" + id_to_name(args[0].base) + ')';
+	code += "roundEven(" + id_to_name(args[0].base) + ')';
 	})
 IMPLEMENT_INTRINSIC_HLSL(round, 0, {
 	code += "round(" + id_to_name(args[0].base) + ')';
@@ -1167,7 +1167,7 @@ IMPLEMENT_INTRINSIC_SPIRV(round, 0, {
 	return
 	add_instruction(spv::OpExtInst, convert_type(res_type))
 		.add(_glsl_ext)
-		.add(spv::GLSLstd450Round)
+		.add(spv::GLSLstd450RoundEven)
 		.add(args[0].base);
 	})
 
@@ -1204,7 +1204,7 @@ IMPLEMENT_INTRINSIC_SPIRV(min, 1, {
 	return
 	add_instruction(spv::OpExtInst, convert_type(res_type))
 		.add(_glsl_ext)
-		.add(spv::GLSLstd450FMin)
+		.add(spv::GLSLstd450NMin)
 		.add(args[0].base)
 		.add(args[1].base);
 	})
@@ -1242,7 +1242,7 @@ IMPLEMENT_INTRINSIC_SPIRV(max, 1, {
 	return
 	add_instruction(spv::OpExtInst, convert_type(res_type))
 		.add(_glsl_ext)
-		.add(spv::GLSLstd450FMax)
+		.add(spv::GLSLstd450NMax)
 		.add(args[0].base)
 		.add(args[1].base);
 	})
@@ -1840,6 +1840,35 @@ IMPLEMENT_INTRINSIC_SPIRV(mul, 6, {
 	add_instruction(spv::OpMatrixTimesMatrix, convert_type(res_type))
 		.add(args[1].base) // Flip inputs because matrices are column-wise
 		.add(args[0].base);
+	})
+
+// ret isfinite(x)
+DEFINE_INTRINSIC(isfinite, 0, bool, float)
+DEFINE_INTRINSIC(isfinite, 0, bool2, float2)
+DEFINE_INTRINSIC(isfinite, 0, bool3, float3)
+DEFINE_INTRINSIC(isfinite, 0, bool4, float4)
+IMPLEMENT_INTRINSIC_GLSL(isfinite, 0, {
+	if (args[0].type.rows > 1) {
+		_uses_componentwise_or = true;
+		code += "not(compOr(isinf(" + id_to_name(args[0].base) + "), isnan(" + id_to_name(args[0].base) + ")))";
+	}
+	else
+		code += "!(isinf(" + id_to_name(args[0].base) + ") || isnan(" + id_to_name(args[0].base) + "))";
+	})
+IMPLEMENT_INTRINSIC_HLSL(isfinite, 0, {
+	code += "isfinite(" + id_to_name(args[0].base) + ')';
+	})
+IMPLEMENT_INTRINSIC_SPIRV(isfinite, 0, {
+	const spv::Id isinf = add_instruction(spv::OpIsInf, convert_type(res_type))
+		.add(args[0].base);
+	const spv::Id isnan = add_instruction(spv::OpIsNan, convert_type(res_type))
+		.add(args[0].base);
+	const spv::Id isinf_or_isnan = add_instruction(spv::OpLogicalOr, convert_type(res_type))
+		.add(isinf)
+		.add(isnan);
+	return
+	add_instruction(spv::OpLogicalNot, convert_type(res_type))
+		.add(isinf_or_isnan);
 	})
 
 // ret isinf(x)

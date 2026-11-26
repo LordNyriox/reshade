@@ -4,7 +4,6 @@
  */
 
 #include "vulkan_impl_device.hpp"
-#include "vulkan_hooks.hpp"
 #include "vulkan_impl_command_queue.hpp"
 #include "vulkan_impl_type_convert.hpp"
 #include "dll_log.hpp"
@@ -42,19 +41,26 @@ reshade::vulkan::device_impl::device_impl(
 		functions.vkCreateImage = dispatch_table.CreateImage;
 		functions.vkDestroyImage = dispatch_table.DestroyImage;
 		functions.vkCmdCopyBuffer = dispatch_table.CmdCopyBuffer;
-#if VMA_VULKAN_VERSION >= 1001000
+#if VMA_DEDICATED_ALLOCATION || VMA_VULKAN_VERSION >= 1001000
 		functions.vkGetBufferMemoryRequirements2KHR = dispatch_table.GetBufferMemoryRequirements2;
 		functions.vkGetImageMemoryRequirements2KHR = dispatch_table.GetImageMemoryRequirements2;
+#endif
+#if VMA_BIND_MEMORY2 || VMA_VULKAN_VERSION >= 1001000
 		functions.vkBindBufferMemory2KHR = dispatch_table.BindBufferMemory2;
 		functions.vkBindImageMemory2KHR = dispatch_table.BindImageMemory2;
+#endif
+#if VMA_GET_PHYSICAL_DEVICE_PROPERTIES2
 		functions.vkGetPhysicalDeviceMemoryProperties2KHR = dispatch_table.GetPhysicalDeviceMemoryProperties2;
 #endif
-#if VMA_VULKAN_VERSION >= 1003000
+#if VMA_KHR_MAINTENANCE4 || VMA_VULKAN_VERSION >= 1003000
 		functions.vkGetDeviceBufferMemoryRequirements = dispatch_table.GetDeviceBufferMemoryRequirements;
 		functions.vkGetDeviceImageMemoryRequirements = dispatch_table.GetDeviceImageMemoryRequirements;
 #endif
 #if VMA_EXTERNAL_MEMORY_WIN32 && VK_KHR_external_memory_win32
 		functions.vkGetMemoryWin32HandleKHR = dispatch_table.GetMemoryWin32HandleKHR;
+#endif
+#if VMA_GET_PHYSICAL_DEVICE_PROPERTIES2
+		functions.vkGetPhysicalDeviceProperties2KHR = dispatch_table.GetPhysicalDeviceProperties2;
 #endif
 
 		VmaAllocatorCreateInfo create_info = {};
@@ -69,6 +75,8 @@ reshade::vulkan::device_impl::device_impl(
 		if (vk.KHR_buffer_device_address)
 			create_info.flags |= VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
 #endif
+		if (vk.KHR_maintenance5)
+			create_info.flags |= VMA_ALLOCATOR_CREATE_KHR_MAINTENANCE5_BIT;
 #if VMA_EXTERNAL_MEMORY_WIN32 && VK_KHR_external_memory_win32
 		if (vk.KHR_external_memory_win32)
 			create_info.flags |= VMA_ALLOCATOR_CREATE_KHR_EXTERNAL_MEMORY_WIN32_BIT;
@@ -87,6 +95,10 @@ reshade::vulkan::device_impl::device_impl(
 
 		VkDescriptorPoolCreateInfo create_info { VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
 		create_info.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+#if VK_EXT_descriptor_indexing
+		if (vk.EXT_descriptor_indexing)
+			create_info.flags |= VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
+#endif
 		create_info.maxSets = 512;
 		create_info.poolSizeCount = std::size(pool_sizes);
 		create_info.pPoolSizes = pool_sizes;
@@ -279,9 +291,8 @@ bool reshade::vulkan::device_impl::check_capability(api::device_caps capability)
 #endif
 	}
 	case api::device_caps::resolve_depth_stencil:
-#if VK_KHR_dynamic_rendering
-		// VK_KHR_dynamic_rendering has VK_KHR_depth_stencil_resolve as a dependency
-		return vk.KHR_dynamic_rendering;
+#if VK_KHR_maintenance10
+		return vk.KHR_maintenance10;
 #else
 		return false;
 #endif
@@ -422,6 +433,7 @@ bool reshade::vulkan::device_impl::create_resource(const api::resource_desc &des
 		break;
 	case api::memory_heap::readback:
 		alloc_info.usage = VMA_MEMORY_USAGE_GPU_TO_CPU;
+		alloc_info.requiredFlags |= VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
 		break;
 	case api::memory_heap::scratch:
 		alloc_info.usage = VMA_MEMORY_USAGE_CPU_ONLY;
@@ -516,6 +528,7 @@ bool reshade::vulkan::device_impl::create_resource(const api::resource_desc &des
 							reqs, dedicated_allocation, prefers_dedicated_allocation,
 							object, VK_NULL_HANDLE,
 							VmaBufferImageUsage(create_info, _alloc->m_UseKhrMaintenance5),
+							nullptr,
 							alloc_info,
 							VMA_SUBALLOCATION_TYPE_BUFFER,
 							1, &allocation) != VK_SUCCESS ||
@@ -628,7 +641,8 @@ bool reshade::vulkan::device_impl::create_resource(const api::resource_desc &des
 					if (_alloc->AllocateMemory(
 							reqs, dedicated_allocation, prefers_dedicated_allocation,
 							VK_NULL_HANDLE, object,
-							VmaBufferImageUsage(create_info),
+							VmaBufferImageUsage(create_info, false),
+							nullptr,
 							alloc_info,
 							create_info.tiling == VK_IMAGE_TILING_OPTIMAL ? VMA_SUBALLOCATION_TYPE_IMAGE_OPTIMAL : VMA_SUBALLOCATION_TYPE_IMAGE_LINEAR,
 							1, &allocation) != VK_SUCCESS ||
@@ -840,6 +854,9 @@ bool reshade::vulkan::device_impl::create_resource_view(api::resource resource, 
 		{
 			convert_usage_to_image_usage_flags(usage_type, usage_info.usage);
 
+			// Ensure view usage is a subset of the image usage
+			usage_info.usage &= resource_data->create_info.usage;
+
 			create_info.pNext = &usage_info;
 		}
 
@@ -851,10 +868,13 @@ bool reshade::vulkan::device_impl::create_resource_view(api::resource resource, 
 
 			// Update subresource range to the actual dimensions of the image
 			if (create_info.subresourceRange.levelCount == VK_REMAINING_MIP_LEVELS)
-				data.create_info.subresourceRange.levelCount = resource_data->create_info.mipLevels;
+				data.create_info.subresourceRange.levelCount = resource_data->create_info.mipLevels - create_info.subresourceRange.baseMipLevel;
 			if (create_info.subresourceRange.layerCount == VK_REMAINING_ARRAY_LAYERS)
-				data.create_info.subresourceRange.layerCount = resource_data->create_info.arrayLayers;
-			data.image_extent = resource_data->create_info.extent;
+				// Layers of 2D views of a 3D image refer to depth slices, rather than array layers
+				data.create_info.subresourceRange.layerCount = (resource_data->create_info.imageType == VK_IMAGE_TYPE_3D && create_info.viewType != VK_IMAGE_VIEW_TYPE_3D ? std::max(1u, resource_data->create_info.extent.depth >> create_info.subresourceRange.baseMipLevel) : resource_data->create_info.arrayLayers) - create_info.subresourceRange.baseArrayLayer;
+			data.image_extent.width  = std::max(1u, resource_data->create_info.extent.width  >> create_info.subresourceRange.baseMipLevel);
+			data.image_extent.height = std::max(1u, resource_data->create_info.extent.height >> create_info.subresourceRange.baseMipLevel);
+			data.image_extent.depth  = std::max(1u, resource_data->create_info.extent.depth  >> create_info.subresourceRange.baseMipLevel);
 
 			register_object<VK_OBJECT_TYPE_IMAGE_VIEW>(image_view, std::move(data));
 
@@ -1114,10 +1134,9 @@ bool reshade::vulkan::device_impl::map_texture_region(api::resource resource, ui
 
 	return false;
 }
-void reshade::vulkan::device_impl::unmap_texture_region(api::resource resource, uint32_t subresource)
+void reshade::vulkan::device_impl::unmap_texture_region(api::resource resource, uint32_t)
 {
-	if (subresource != 0)
-		return;
+	// The whole memory was mapped in 'map_texture_region' regardless of the subresource, so always unmap it
 
 	const auto resource_data = get_private_data_for_object<VK_OBJECT_TYPE_IMAGE>((VkImage)resource.handle);
 	if (resource_data == nullptr)
@@ -1212,17 +1231,20 @@ void reshade::vulkan::device_impl::update_texture_region(const api::subresource_
 		else
 		{
 			const size_t row_size = std::min(row_pitch, data.row_pitch);
+			// Block compressed formats have a row of blocks, rather than a row of pixels
+			const size_t num_rows = api::format_slice_pitch(convert_format(resource_data->create_info.format), 1, region.imageExtent.height);
 
 			for (size_t z = 0; z < region.imageExtent.depth; ++z)
 			{
 				const auto dst_slice = static_cast<uint8_t *>(mapped_data) + z * slice_pitch;
 				const auto src_slice = static_cast<const uint8_t *>(data.data) + z * data.slice_pitch;
 
-				for (size_t y = 0; y < region.imageExtent.height; ++y)
+				for (size_t y = 0; y < num_rows; ++y)
 				{
 					std::memcpy(
 						dst_slice + y * row_pitch,
-						src_slice + y * data.row_pitch, row_size);
+						src_slice + y * data.row_pitch,
+						row_size);
 				}
 			}
 		}
@@ -1318,7 +1340,18 @@ static T &replace_or_append_structure_chain_node(const void *&chain, VkStructure
 	return node;
 }
 
-static bool setup_shader_stage_inline(VkShaderStageFlagBits stage, const reshade::api::shader_desc &desc, const VkPipelineShaderStageCreateInfo *orig_stage_info, VkPipelineShaderStageCreateInfo &stage_info, VkShaderModuleCreateInfo &module_info, VkSpecializationInfo &spec_info, std::vector<VkSpecializationMapEntry> &spec_map, std::vector<pnext_link_restore> &restore_links)
+static bool setup_shader_stage(
+	VkShaderStageFlagBits stage,
+	const reshade::api::shader_desc &desc,
+	const VkPipelineShaderStageCreateInfo *orig_stage_info,
+	VkPipelineShaderStageCreateInfo &stage_info,
+	VkShaderModuleCreateInfo &module_info,
+	VkSpecializationInfo &spec_info,
+	std::vector<VkSpecializationMapEntry> &spec_map,
+	std::vector<pnext_link_restore> &restore_links,
+	VkDevice device,
+	PFN_vkCreateShaderModule create_shader_module,
+	std::vector<VkShaderModule> &temp_modules)
 {
 	if (desc.code_size == 0 || desc.code == nullptr)
 		return false;
@@ -1346,9 +1379,26 @@ static bool setup_shader_stage_inline(VkShaderStageFlagBits stage, const reshade
 		stage_info.pSpecializationInfo = &spec_info;
 	}
 
-	replace_or_append_structure_chain_node(stage_info.pNext, VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, module_info, restore_links);
-	module_info.codeSize = desc.code_size;
-	module_info.pCode = static_cast<const uint32_t *>(desc.code);
+	// Describing the shader module in-place is also valid if the application already did so in the original create info (e.g. via "VK_EXT_graphics_pipeline_library")
+	if (create_shader_module == nullptr || find_in_structure_chain<VkShaderModuleCreateInfo>(stage_info.pNext, VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO) != nullptr)
+	{
+		replace_or_append_structure_chain_node(stage_info.pNext, VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, module_info, restore_links);
+		module_info.codeSize = desc.code_size;
+		module_info.pCode = static_cast<const uint32_t *>(desc.code);
+	}
+	else
+	{
+		module_info = { VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO };
+		module_info.codeSize = desc.code_size;
+		module_info.pCode = static_cast<const uint32_t *>(desc.code);
+
+		VkShaderModule module = VK_NULL_HANDLE;
+		if (create_shader_module(device, &module_info, nullptr, &module) != VK_SUCCESS)
+			return false;
+
+		temp_modules.push_back(module);
+		stage_info.module = module;
+	}
 
 	return true;
 }
@@ -1395,6 +1445,10 @@ bool reshade::vulkan::device_impl::create_pipeline(api::pipeline_layout layout, 
 }
 bool reshade::vulkan::device_impl::create_pipeline(api::pipeline_layout layout, uint32_t subobject_count, const api::pipeline_subobject *subobjects, api::pipeline *out_pipeline, const VkRayTracingPipelineCreateInfoKHR *orig_create_info)
 {
+	std::vector<VkShaderModule> temp_shader_modules;
+	std::vector<pnext_link_restore> pnext_restore_links;
+
+	api::pipeline_subobject dynamic_states_subobject = {};
 	std::vector<api::shader_desc> raygen_desc;
 	std::vector<api::shader_desc> any_hit_desc;
 	std::vector<api::shader_desc> closest_hit_desc;
@@ -1415,6 +1469,9 @@ bool reshade::vulkan::device_impl::create_pipeline(api::pipeline_layout layout, 
 
 		switch (subobjects[i].type)
 		{
+		case api::pipeline_subobject_type::dynamic_pipeline_states:
+			dynamic_states_subobject = subobjects[i];
+			break;
 		case api::pipeline_subobject_type::raygen_shader:
 			for (uint32_t k = 0; k < subobjects[i].count; ++k)
 				raygen_desc.push_back(static_cast<const api::shader_desc *>(subobjects[i].data)[k]);
@@ -1476,21 +1533,36 @@ bool reshade::vulkan::device_impl::create_pipeline(api::pipeline_layout layout, 
 		create_info.maxPipelineRayRecursionDepth = max_recursion_depth;
 
 		if (find_in_structure_chain<VkPipelineCreateFlags2CreateInfo>(create_info.pNext, VK_STRUCTURE_TYPE_PIPELINE_CREATE_FLAGS_2_CREATE_INFO) == nullptr)
-			create_info.flags = convert_pipeline_flags(flags);
+			// Keep original flags that have to match those of any linked libraries
+			create_info.flags = convert_pipeline_flags(flags) | (create_info.flags & (
+				VK_PIPELINE_CREATE_RAY_TRACING_NO_NULL_ANY_HIT_SHADERS_BIT_KHR |
+				VK_PIPELINE_CREATE_RAY_TRACING_NO_NULL_CLOSEST_HIT_SHADERS_BIT_KHR |
+				VK_PIPELINE_CREATE_RAY_TRACING_NO_NULL_MISS_SHADERS_BIT_KHR |
+				VK_PIPELINE_CREATE_RAY_TRACING_NO_NULL_INTERSECTION_SHADERS_BIT_KHR));
 
 		const size_t max_shader_stage_count = raygen_desc.size() + any_hit_desc.size() + closest_hit_desc.size() + miss_desc.size() + intersection_desc.size() + callable_desc.size();
 		std::vector<VkPipelineShaderStageCreateInfo> shader_stage_info;
 		std::vector<VkShaderModuleCreateInfo> shader_module_info;
 		std::vector<VkSpecializationInfo> spec_info;
 		std::vector<std::vector<VkSpecializationMapEntry>> spec_map;
-		std::vector<pnext_link_restore> pnext_restore_links;
 		shader_stage_info.reserve(max_shader_stage_count);
 		shader_module_info.reserve(max_shader_stage_count);
 		spec_info.reserve(max_shader_stage_count);
 		spec_map.reserve(max_shader_stage_count);
 
 		const auto append_stage = [&](VkShaderStageFlagBits stage, const api::shader_desc &shader_desc) {
-			return setup_shader_stage_inline(stage, shader_desc, nullptr, shader_stage_info.emplace_back(), shader_module_info.emplace_back(), spec_info.emplace_back(), spec_map.emplace_back(), pnext_restore_links);
+			return setup_shader_stage(
+				stage,
+				shader_desc,
+				nullptr,
+				shader_stage_info.emplace_back(),
+				shader_module_info.emplace_back(),
+				spec_info.emplace_back(),
+				spec_map.emplace_back(),
+				pnext_restore_links,
+				_orig,
+				vk.KHR_maintenance5 ? nullptr : vk.CreateShaderModule,
+				temp_shader_modules);
 		};
 
 		for (const api::shader_desc &shader_desc : raygen_desc)
@@ -1530,11 +1602,6 @@ bool reshade::vulkan::device_impl::create_pipeline(api::pipeline_layout layout, 
 		std::vector<VkRayTracingShaderGroupCreateInfoKHR> group_infos;
 		group_infos.reserve(shader_groups.size());
 
-		bool any_null_any_hit = false;
-		bool any_null_closest_hit = false;
-		bool any_null_miss = false;
-		bool any_null_intersection = false;
-
 		for (const api::shader_group &shader_group : shader_groups)
 		{
 			VkRayTracingShaderGroupCreateInfoKHR &group_info = group_infos.emplace_back(VkRayTracingShaderGroupCreateInfoKHR { VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR });
@@ -1543,41 +1610,21 @@ bool reshade::vulkan::device_impl::create_pipeline(api::pipeline_layout layout, 
 			switch (shader_group.type)
 			{
 			case api::shader_group_type::raygen:
-				if (shader_group.raygen.shader_index != UINT32_MAX)
-				{
-					group_info.generalShader = shader_group.raygen.shader_index;
-				}
-				else
-				{
-					group_info.generalShader = VK_SHADER_UNUSED_KHR;
-				}
+				group_info.generalShader = (shader_group.raygen.shader_index != UINT32_MAX) ? shader_group.raygen.shader_index : VK_SHADER_UNUSED_KHR;
 				group_info.closestHitShader = VK_SHADER_UNUSED_KHR;
 				group_info.anyHitShader = VK_SHADER_UNUSED_KHR;
 				group_info.intersectionShader = VK_SHADER_UNUSED_KHR;
 				break;
 			case api::shader_group_type::miss:
-				if (shader_group.miss.shader_index != UINT32_MAX)
-				{
-					group_info.generalShader = static_cast<uint32_t>(raygen_desc.size() + any_hit_desc.size() + closest_hit_desc.size()) + shader_group.miss.shader_index;
-				}
-				else
-				{
-					group_info.generalShader = VK_SHADER_UNUSED_KHR;
-					any_null_miss = true;
-				}
+				group_info.generalShader = (shader_group.miss.shader_index != UINT32_MAX) ?
+					static_cast<uint32_t>(raygen_desc.size() + any_hit_desc.size() + closest_hit_desc.size()) + shader_group.miss.shader_index : VK_SHADER_UNUSED_KHR;
 				group_info.closestHitShader = VK_SHADER_UNUSED_KHR;
 				group_info.anyHitShader = VK_SHADER_UNUSED_KHR;
 				group_info.intersectionShader = VK_SHADER_UNUSED_KHR;
 				break;
 			case api::shader_group_type::callable:
-				if (shader_group.callable.shader_index != UINT32_MAX)
-				{
-					group_info.generalShader = static_cast<uint32_t>(raygen_desc.size() + any_hit_desc.size() + closest_hit_desc.size() + miss_desc.size() + intersection_desc.size()) + shader_group.callable.shader_index;
-				}
-				else
-				{
-					group_info.generalShader = VK_SHADER_UNUSED_KHR;
-				}
+				group_info.generalShader = (shader_group.callable.shader_index != UINT32_MAX) ?
+					static_cast<uint32_t>(raygen_desc.size() + any_hit_desc.size() + closest_hit_desc.size() + miss_desc.size() + intersection_desc.size()) + shader_group.callable.shader_index : VK_SHADER_UNUSED_KHR;
 				group_info.closestHitShader = VK_SHADER_UNUSED_KHR;
 				group_info.anyHitShader = VK_SHADER_UNUSED_KHR;
 				group_info.intersectionShader = VK_SHADER_UNUSED_KHR;
@@ -1585,48 +1632,18 @@ bool reshade::vulkan::device_impl::create_pipeline(api::pipeline_layout layout, 
 			case api::shader_group_type::hit_group_triangles:
 			case api::shader_group_type::hit_group_aabbs:
 				group_info.generalShader = VK_SHADER_UNUSED_KHR;
-				if (shader_group.hit_group.any_hit_shader_index != UINT32_MAX)
-				{
-					group_info.anyHitShader = static_cast<uint32_t>(raygen_desc.size()) + shader_group.hit_group.any_hit_shader_index;
-				}
-				else
-				{
-					group_info.anyHitShader = VK_SHADER_UNUSED_KHR;
-					any_null_any_hit = true;
-				}
-				if (shader_group.hit_group.closest_hit_shader_index != UINT32_MAX)
-				{
-					group_info.closestHitShader = static_cast<uint32_t>(raygen_desc.size() + any_hit_desc.size()) + shader_group.hit_group.closest_hit_shader_index;
-				}
-				else
-				{
-					group_info.closestHitShader = VK_SHADER_UNUSED_KHR;
-					any_null_closest_hit = true;
-				}
-				if (shader_group.hit_group.intersection_shader_index != UINT32_MAX && shader_group.type != api::shader_group_type::hit_group_triangles)
-				{
-					group_info.intersectionShader = static_cast<uint32_t>(raygen_desc.size() + any_hit_desc.size() + closest_hit_desc.size() + miss_desc.size()) + shader_group.hit_group.intersection_shader_index;
-				}
-				else
-				{
-					group_info.intersectionShader = VK_SHADER_UNUSED_KHR;
-					any_null_intersection = true;
-				}
+				group_info.anyHitShader = (shader_group.hit_group.any_hit_shader_index != UINT32_MAX) ?
+					static_cast<uint32_t>(raygen_desc.size()) + shader_group.hit_group.any_hit_shader_index : VK_SHADER_UNUSED_KHR;
+				group_info.closestHitShader = (shader_group.hit_group.closest_hit_shader_index != UINT32_MAX) ?
+					static_cast<uint32_t>(raygen_desc.size() + any_hit_desc.size()) + shader_group.hit_group.closest_hit_shader_index : VK_SHADER_UNUSED_KHR;
+				group_info.intersectionShader = (shader_group.hit_group.intersection_shader_index != UINT32_MAX && shader_group.type != api::shader_group_type::hit_group_triangles) ?
+					static_cast<uint32_t>(raygen_desc.size() + any_hit_desc.size() + closest_hit_desc.size() + miss_desc.size()) + shader_group.hit_group.intersection_shader_index : VK_SHADER_UNUSED_KHR;
 				break;
 			}
 		}
 
 		create_info.groupCount = static_cast<uint32_t>(group_infos.size());
 		create_info.pGroups = group_infos.data();
-
-		if (!any_null_any_hit)
-			create_info.flags |= VK_PIPELINE_CREATE_RAY_TRACING_NO_NULL_ANY_HIT_SHADERS_BIT_KHR;
-		if (!any_null_closest_hit)
-			create_info.flags |= VK_PIPELINE_CREATE_RAY_TRACING_NO_NULL_CLOSEST_HIT_SHADERS_BIT_KHR;
-		if (!any_null_miss)
-			create_info.flags |= VK_PIPELINE_CREATE_RAY_TRACING_NO_NULL_MISS_SHADERS_BIT_KHR;
-		if (!any_null_intersection)
-			create_info.flags |= VK_PIPELINE_CREATE_RAY_TRACING_NO_NULL_INTERSECTION_SHADERS_BIT_KHR;
 
 		VkPipelineLibraryCreateInfoKHR library_info;
 		VkRayTracingPipelineInterfaceCreateInfoKHR interface_info;
@@ -1636,17 +1653,32 @@ bool reshade::vulkan::device_impl::create_pipeline(api::pipeline_layout layout, 
 			library_info.libraryCount = static_cast<uint32_t>(libraries.size());
 			library_info.pLibraries = reinterpret_cast<const VkPipeline *>(libraries.data());
 
+			create_info.pLibraryInfo = &library_info;
+		}
+		if (!libraries.empty() || (flags & api::pipeline_flags::library) != 0)
+		{
 			interface_info = { VK_STRUCTURE_TYPE_RAY_TRACING_PIPELINE_INTERFACE_CREATE_INFO_KHR };
 			interface_info.maxPipelineRayPayloadSize = max_payload_size;
 			interface_info.maxPipelineRayHitAttributeSize = max_attribute_size;
 
-			create_info.pLibraryInfo = &library_info;
 			create_info.pLibraryInterface = &interface_info;
 		}
+
+		std::vector<VkDynamicState> dynamic_states;
+		convert_dynamic_states(dynamic_states_subobject.count, static_cast<const api::dynamic_state *>(dynamic_states_subobject.data), dynamic_states);
+
+		VkPipelineDynamicStateCreateInfo dynamic_state_info = create_info.pDynamicState != nullptr ? *create_info.pDynamicState : VkPipelineDynamicStateCreateInfo { VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO };
+		create_info.pDynamicState = &dynamic_state_info;
+		dynamic_state_info.dynamicStateCount = static_cast<uint32_t>(dynamic_states.size());
+		dynamic_state_info.pDynamicStates = dynamic_states.data();
 
 		if (VkPipeline object = VK_NULL_HANDLE;
 			vk.CreateRayTracingPipelinesKHR(_orig, VK_NULL_HANDLE, VK_NULL_HANDLE, 1, &create_info, nullptr, &object) == VK_SUCCESS)
 		{
+			restore_pnext_links(pnext_restore_links);
+			for (const VkShaderModule module : temp_shader_modules)
+				vk.DestroyShaderModule(_orig, module, nullptr);
+
 			*out_pipeline = { (uint64_t)object };
 			return true;
 		}
@@ -1654,14 +1686,20 @@ bool reshade::vulkan::device_impl::create_pipeline(api::pipeline_layout layout, 
 #endif
 
 exit_failure:
+	restore_pnext_links(pnext_restore_links);
+	for (const VkShaderModule module : temp_shader_modules)
+		vk.DestroyShaderModule(_orig, module, nullptr);
+
 	*out_pipeline = { 0 };
 	return false;
 }
 bool reshade::vulkan::device_impl::create_pipeline(api::pipeline_layout layout, uint32_t subobject_count, const api::pipeline_subobject *subobjects, api::pipeline *out_pipeline, const VkComputePipelineCreateInfo *orig_create_info)
 {
+	std::vector<VkShaderModule> temp_shader_modules;
+	std::vector<pnext_link_restore> pnext_restore_links;
+
 	api::shader_desc cs_desc = {};
 	api::pipeline_flags flags = api::pipeline_flags::none;
-	std::vector<pnext_link_restore> pnext_restore_links;
 
 	for (uint32_t i = 0; i < subobject_count; ++i)
 	{
@@ -1696,7 +1734,18 @@ bool reshade::vulkan::device_impl::create_pipeline(api::pipeline_layout layout, 
 		VkShaderModuleCreateInfo shader_module_info;
 		if (cs_desc.code_size != 0)
 		{
-			if (!setup_shader_stage_inline(VK_SHADER_STAGE_COMPUTE_BIT, cs_desc, orig_create_info != nullptr ? &orig_create_info->stage : nullptr, create_info.stage, shader_module_info, spec_info, spec_map, pnext_restore_links))
+			if (!setup_shader_stage(
+					VK_SHADER_STAGE_COMPUTE_BIT,
+					cs_desc,
+					orig_create_info != nullptr ? &orig_create_info->stage : nullptr,
+					create_info.stage,
+					shader_module_info,
+					spec_info,
+					spec_map,
+					pnext_restore_links,
+					_orig,
+					vk.KHR_maintenance5 ? nullptr : vk.CreateShaderModule,
+					temp_shader_modules))
 				goto exit_failure;
 		}
 
@@ -1704,6 +1753,9 @@ bool reshade::vulkan::device_impl::create_pipeline(api::pipeline_layout layout, 
 			vk.CreateComputePipelines(_orig, VK_NULL_HANDLE, 1, &create_info, nullptr, &object) == VK_SUCCESS)
 		{
 			restore_pnext_links(pnext_restore_links);
+			for (const VkShaderModule module : temp_shader_modules)
+				vk.DestroyShaderModule(_orig, module, nullptr);
+
 			*out_pipeline = { (uint64_t)object };
 			return true;
 		}
@@ -1711,12 +1763,17 @@ bool reshade::vulkan::device_impl::create_pipeline(api::pipeline_layout layout, 
 
 exit_failure:
 	restore_pnext_links(pnext_restore_links);
+	for (const VkShaderModule module : temp_shader_modules)
+		vk.DestroyShaderModule(_orig, module, nullptr);
+
 	*out_pipeline = { 0 };
 	return false;
 }
 bool reshade::vulkan::device_impl::create_pipeline(api::pipeline_layout layout, uint32_t subobject_count, const api::pipeline_subobject *subobjects, api::pipeline *out_pipeline, const VkGraphicsPipelineCreateInfo *orig_create_info)
 {
 	VkRenderPass render_pass = VK_NULL_HANDLE;
+	std::vector<VkShaderModule> temp_shader_modules;
+	std::vector<pnext_link_restore> pnext_restore_links;
 
 	api::shader_desc vs_desc = {};
 	api::shader_desc hs_desc = {};
@@ -1739,7 +1796,6 @@ bool reshade::vulkan::device_impl::create_pipeline(api::pipeline_layout layout, 
 	uint32_t viewport_count = 1;
 	std::vector<api::pipeline> libraries;
 	api::pipeline_flags flags = api::pipeline_flags::none;
-	std::vector<pnext_link_restore> pnext_restore_links;
 
 	for (uint32_t i = 0; i < subobject_count; ++i)
 	{
@@ -1857,8 +1913,20 @@ bool reshade::vulkan::device_impl::create_pipeline(api::pipeline_layout layout, 
 		const auto append_stage = [&](VkShaderStageFlagBits stage, const api::shader_desc &shader_desc, const VkPipelineShaderStageCreateInfo *original_stage_info) {
 			if (shader_desc.code_size != 0)
 			{
-				if (!setup_shader_stage_inline(stage, shader_desc, original_stage_info, shader_stage_info[create_info.stageCount], shader_module_info[create_info.stageCount], spec_info[create_info.stageCount], spec_map[create_info.stageCount], pnext_restore_links))
+				if (!setup_shader_stage(
+						stage,
+						shader_desc,
+						original_stage_info,
+						shader_stage_info[create_info.stageCount],
+						shader_module_info[create_info.stageCount],
+						spec_info[create_info.stageCount],
+						spec_map[create_info.stageCount],
+						pnext_restore_links,
+						_orig,
+						vk.KHR_maintenance5 ? nullptr : vk.CreateShaderModule,
+						temp_shader_modules))
 					return false;
+
 				++create_info.stageCount;
 			}
 			else if (original_stage_info != nullptr)
@@ -1952,9 +2020,12 @@ bool reshade::vulkan::device_impl::create_pipeline(api::pipeline_layout layout, 
 		}
 
 		std::vector<VkDynamicState> dynamic_states;
-		// Always make scissor rectangles and viewports dynamic
-		dynamic_states.push_back(VK_DYNAMIC_STATE_SCISSOR);
-		dynamic_states.push_back(VK_DYNAMIC_STATE_VIEWPORT);
+		if (orig_create_info == nullptr)
+		{
+			// Always make scissor rectangles and viewports dynamic
+			dynamic_states.push_back(VK_DYNAMIC_STATE_SCISSOR);
+			dynamic_states.push_back(VK_DYNAMIC_STATE_VIEWPORT);
+		}
 		convert_dynamic_states(dynamic_states_subobject.count, static_cast<const api::dynamic_state *>(dynamic_states_subobject.data), dynamic_states);
 
 		VkPipelineDynamicStateCreateInfo dynamic_state_info = create_info.pDynamicState != nullptr ? *create_info.pDynamicState : VkPipelineDynamicStateCreateInfo { VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO };
@@ -1985,7 +2056,6 @@ bool reshade::vulkan::device_impl::create_pipeline(api::pipeline_layout layout, 
 
 		VkPipelineInputAssemblyStateCreateInfo input_assembly_state_info = create_info.pInputAssemblyState != nullptr ? *create_info.pInputAssemblyState : VkPipelineInputAssemblyStateCreateInfo { VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO };
 		create_info.pInputAssemblyState = &input_assembly_state_info;
-		input_assembly_state_info.primitiveRestartEnable = VK_FALSE;
 		input_assembly_state_info.topology = convert_primitive_topology(topology);
 
 		VkPipelineTessellationStateCreateInfo tessellation_state_info = create_info.pTessellationState != nullptr ? *create_info.pTessellationState : VkPipelineTessellationStateCreateInfo { VK_STRUCTURE_TYPE_PIPELINE_TESSELLATION_STATE_CREATE_INFO };
@@ -1995,8 +2065,9 @@ bool reshade::vulkan::device_impl::create_pipeline(api::pipeline_layout layout, 
 
 		VkPipelineViewportStateCreateInfo viewport_state_info = create_info.pViewportState != nullptr ? *create_info.pViewportState : VkPipelineViewportStateCreateInfo { VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO };
 		create_info.pViewportState = &viewport_state_info;
-		viewport_state_info.scissorCount = viewport_count;
-		viewport_state_info.viewportCount = viewport_count;
+		// Counts have to be zero if they are dynamic too
+		viewport_state_info.scissorCount = std::find(dynamic_states.begin(), dynamic_states.end(), VK_DYNAMIC_STATE_SCISSOR_WITH_COUNT) == dynamic_states.end() ? viewport_count : 0;
+		viewport_state_info.viewportCount = std::find(dynamic_states.begin(), dynamic_states.end(), VK_DYNAMIC_STATE_VIEWPORT_WITH_COUNT) == dynamic_states.end() ? viewport_count : 0;
 
 		VkPipelineRasterizationStateCreateInfo rasterization_state_info;
 		{
@@ -2016,7 +2087,6 @@ bool reshade::vulkan::device_impl::create_pipeline(api::pipeline_layout layout, 
 #endif
 
 		convert_rasterizer_desc(rasterizer_desc, rasterization_state_info);
-		rasterization_state_info.rasterizerDiscardEnable = VK_FALSE;
 		rasterization_state_info.lineWidth = 1.0f;
 
 #if VK_EXT_transform_feedback
@@ -2032,9 +2102,6 @@ bool reshade::vulkan::device_impl::create_pipeline(api::pipeline_layout layout, 
 		VkPipelineMultisampleStateCreateInfo multisample_state_info = create_info.pMultisampleState != nullptr ? *create_info.pMultisampleState : VkPipelineMultisampleStateCreateInfo { VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO };
 		create_info.pMultisampleState = &multisample_state_info;
 		multisample_state_info.rasterizationSamples = sample_count != 0 ? static_cast<VkSampleCountFlagBits>(sample_count) : VK_SAMPLE_COUNT_1_BIT;
-		multisample_state_info.sampleShadingEnable = VK_FALSE;
-		multisample_state_info.minSampleShading = 0.0f;
-		multisample_state_info.alphaToOneEnable = VK_FALSE;
 		multisample_state_info.pSampleMask = &sample_mask;
 
 		VkPipelineDepthStencilStateCreateInfo depth_stencil_state_info = create_info.pDepthStencilState != nullptr ? *create_info.pDepthStencilState : VkPipelineDepthStencilStateCreateInfo { VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO };
@@ -2086,10 +2153,10 @@ bool reshade::vulkan::device_impl::create_pipeline(api::pipeline_layout layout, 
 			VkSubpassDependency subdep = {};
 			subdep.srcSubpass = VK_SUBPASS_EXTERNAL;
 			subdep.dstSubpass = 0;
-			subdep.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+			subdep.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
 			subdep.dstStageMask = VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT;
-			subdep.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-			subdep.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+			subdep.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+			subdep.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
 
 			VkSubpassDescription subpass = {};
 			subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
@@ -2163,7 +2230,8 @@ bool reshade::vulkan::device_impl::create_pipeline(api::pipeline_layout layout, 
 			vk.CreateGraphicsPipelines(_orig, VK_NULL_HANDLE, 1, &create_info, nullptr, &object) == VK_SUCCESS)
 		{
 			restore_pnext_links(pnext_restore_links);
-
+			for (const VkShaderModule module : temp_shader_modules)
+				vk.DestroyShaderModule(_orig, module, nullptr);
 			if (render_pass != VK_NULL_HANDLE)
 				vk.DestroyRenderPass(_orig, render_pass, nullptr);
 
@@ -2175,6 +2243,8 @@ bool reshade::vulkan::device_impl::create_pipeline(api::pipeline_layout layout, 
 
 exit_failure:
 	restore_pnext_links(pnext_restore_links);
+	for (const VkShaderModule module : temp_shader_modules)
+		vk.DestroyShaderModule(_orig, module, nullptr);
 	if (render_pass != VK_NULL_HANDLE)
 		vk.DestroyRenderPass(_orig, render_pass, nullptr);
 
@@ -2269,6 +2339,9 @@ bool reshade::vulkan::device_impl::create_descriptor_set_layout(const api::pipel
 
 		data.num_descriptors += internal_binding.descriptorCount;
 
+		// Keep copy of this pointer, since adding additional bindings below may invalidate the binding reference
+		const VkSampler *const immutable_samplers = internal_binding.pImmutableSamplers;
+
 		VkDescriptorBindingFlags binding_flags = 0;
 #if VK_EXT_descriptor_indexing
 		if (with_flags && vk.EXT_descriptor_indexing)
@@ -2300,6 +2373,8 @@ bool reshade::vulkan::device_impl::create_descriptor_set_layout(const api::pipel
 			additional_binding.descriptorType = convert_descriptor_type(range->type);
 			additional_binding.descriptorCount = 1;
 			additional_binding.stageFlags = static_cast<VkShaderStageFlags>(range->visibility);
+			if (immutable_samplers != nullptr)
+				additional_binding.pImmutableSamplers = immutable_samplers + 1 + j;
 
 			offset += additional_binding.descriptorCount;
 			++data.num_descriptors;
@@ -2534,7 +2609,7 @@ void reshade::vulkan::device_impl::free_descriptor_tables(uint32_t count, const 
 
 void reshade::vulkan::device_impl::get_descriptor_heap_offset(api::descriptor_table table, uint32_t binding, uint32_t array_offset, api::descriptor_heap *heap, uint32_t *offset) const
 {
-	assert(heap != nullptr && offset != nullptr);
+	assert(heap != nullptr);
 
 	*heap = { 0 };
 	if (offset != nullptr)
@@ -2791,6 +2866,10 @@ void reshade::vulkan::device_impl::set_resource_view_name(api::resource_view vie
 
 	VkDebugUtilsObjectNameInfoEXT name_info { VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT };
 	name_info.objectType = data->create_info.sType == VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO ? VK_OBJECT_TYPE_IMAGE_VIEW : VK_OBJECT_TYPE_BUFFER_VIEW;
+#if VK_KHR_acceleration_structure
+	if (data->create_info.sType == VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR)
+		name_info.objectType = VK_OBJECT_TYPE_ACCELERATION_STRUCTURE_KHR;
+#endif
 	name_info.objectHandle = view.handle;
 	name_info.pObjectName = name;
 

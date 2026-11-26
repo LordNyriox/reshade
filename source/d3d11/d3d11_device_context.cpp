@@ -520,7 +520,7 @@ void    STDMETHODCALLTYPE D3D11DeviceContext::SOSetTargets(UINT NumBuffers, ID3D
 
 	temp_mem<uint64_t, D3D11_SO_BUFFER_SLOT_COUNT> offsets_64(NumBuffers);
 	for (UINT i = 0; i < NumBuffers; ++i)
-		offsets_64[i] = pOffsets[i];
+		offsets_64[i] = (pOffsets != nullptr && pOffsets[i] != UINT_MAX) ? pOffsets[i] : UINT64_MAX; // Append by default
 
 	reshade::invoke_addon_event<reshade::addon_event::bind_stream_output_buffers>(this, 0, NumBuffers, buffer_handles, offsets_64.p, nullptr, nullptr, nullptr);
 #endif
@@ -615,7 +615,8 @@ void    STDMETHODCALLTYPE D3D11DeviceContext::CopySubresourceRegion(ID3D11Resour
 		}
 		else
 		{
-			const bool use_dst_box = DstX != 0 || DstY != 0 || DstZ != 0;
+			// Destination region is only the whole subresource if the entire source subresource is copied to the origin
+			const bool use_dst_box = pSrcBox != nullptr || DstX != 0 || DstY != 0 || DstZ != 0;
 			reshade::api::subresource_box dst_box;
 
 			if (use_dst_box)
@@ -642,27 +643,27 @@ void    STDMETHODCALLTYPE D3D11DeviceContext::CopySubresourceRegion(ID3D11Resour
 						{
 							D3D11_TEXTURE1D_DESC desc;
 							static_cast<ID3D11Texture1D *>(pSrcResource)->GetDesc(&desc);
-							dst_box.right += desc.Width;
-							dst_box.bottom += 1;
-							dst_box.back += 1;
+							dst_box.right += std::max(1u, desc.Width >> (SrcSubresource % desc.MipLevels));
+							dst_box.bottom += 1u;
+							dst_box.back += 1u;
 						}
 						break;
 					case D3D11_RESOURCE_DIMENSION_TEXTURE2D:
 						{
 							D3D11_TEXTURE2D_DESC desc;
 							static_cast<ID3D11Texture2D *>(pSrcResource)->GetDesc(&desc);
-							dst_box.right += desc.Width;
-							dst_box.bottom += desc.Height;
-							dst_box.back += 1;
+							dst_box.right += std::max(1u, desc.Width >> (SrcSubresource % desc.MipLevels));
+							dst_box.bottom += std::max(1u, desc.Height >> (SrcSubresource % desc.MipLevels));
+							dst_box.back += 1u;
 						}
 						break;
 					case D3D11_RESOURCE_DIMENSION_TEXTURE3D:
 						{
 							D3D11_TEXTURE3D_DESC desc;
 							static_cast<ID3D11Texture3D *>(pSrcResource)->GetDesc(&desc);
-							dst_box.right += desc.Width;
-							dst_box.bottom += desc.Height;
-							dst_box.back += desc.Depth;
+							dst_box.right += std::max(1u, desc.Width >> (SrcSubresource % desc.MipLevels));
+							dst_box.bottom += std::max(1u, desc.Height >> (SrcSubresource % desc.MipLevels));
+							dst_box.back += std::max(1u, desc.Depth >> (SrcSubresource % desc.MipLevels));
 						}
 						break;
 					}
@@ -770,22 +771,6 @@ void    STDMETHODCALLTYPE D3D11DeviceContext::UpdateSubresource(ID3D11Resource *
 }
 void    STDMETHODCALLTYPE D3D11DeviceContext::CopyStructureCount(ID3D11Buffer *pDstBuffer, UINT DstAlignedByteOffset, ID3D11UnorderedAccessView *pSrcView)
 {
-#if RESHADE_ADDON >= 2
-	assert(pSrcView != nullptr);
-
-	if (reshade::has_addon_event<reshade::addon_event::copy_buffer_region>())
-	{
-		D3D11_UNORDERED_ACCESS_VIEW_DESC desc;
-		pSrcView->GetDesc(&desc);
-		com_ptr<ID3D11Resource> src;
-		pSrcView->GetResource(&src);
-
-		if (desc.ViewDimension == D3D11_UAV_DIMENSION_BUFFER &&
-			reshade::invoke_addon_event<reshade::addon_event::copy_buffer_region>(this, to_handle(src.get()), desc.Buffer.FirstElement, to_handle(pDstBuffer), DstAlignedByteOffset, desc.Buffer.NumElements))
-			return;
-	}
-#endif
-
 	_orig->CopyStructureCount(pDstBuffer, DstAlignedByteOffset, pSrcView);
 }
 void    STDMETHODCALLTYPE D3D11DeviceContext::ClearRenderTargetView(ID3D11RenderTargetView *pRenderTargetView, const FLOAT ColorRGBA[4])
@@ -1191,7 +1176,8 @@ void    STDMETHODCALLTYPE D3D11DeviceContext::CopySubresourceRegion1(ID3D11Resou
 		}
 		else
 		{
-			const bool use_dst_box = DstX != 0 || DstY != 0 || DstZ != 0;
+			// Destination region is only the whole subresource if the entire source subresource is copied to the origin
+			const bool use_dst_box = pSrcBox != nullptr || DstX != 0 || DstY != 0 || DstZ != 0;
 			reshade::api::subresource_box dst_box;
 
 			if (use_dst_box)
@@ -1218,27 +1204,27 @@ void    STDMETHODCALLTYPE D3D11DeviceContext::CopySubresourceRegion1(ID3D11Resou
 						{
 							D3D11_TEXTURE1D_DESC desc;
 							static_cast<ID3D11Texture1D *>(pSrcResource)->GetDesc(&desc);
-							dst_box.right += desc.Width;
-							dst_box.bottom += 1;
-							dst_box.back += 1;
+							dst_box.right += std::max(1u, desc.Width >> (SrcSubresource % desc.MipLevels));
+							dst_box.bottom += 1u;
+							dst_box.back += 1u;
 						}
 						break;
 					case D3D11_RESOURCE_DIMENSION_TEXTURE2D:
 						{
 							D3D11_TEXTURE2D_DESC desc;
 							static_cast<ID3D11Texture2D *>(pSrcResource)->GetDesc(&desc);
-							dst_box.right += desc.Width;
-							dst_box.bottom += desc.Height;
-							dst_box.back += 1;
+							dst_box.right += std::max(1u, desc.Width >> (SrcSubresource % desc.MipLevels));
+							dst_box.bottom += std::max(1u, desc.Height >> (SrcSubresource % desc.MipLevels));
+							dst_box.back += 1u;
 						}
 						break;
 					case D3D11_RESOURCE_DIMENSION_TEXTURE3D:
 						{
 							D3D11_TEXTURE3D_DESC desc;
 							static_cast<ID3D11Texture3D *>(pSrcResource)->GetDesc(&desc);
-							dst_box.right += desc.Width;
-							dst_box.bottom += desc.Height;
-							dst_box.back += desc.Depth;
+							dst_box.right += std::max(1u, desc.Width >> (SrcSubresource % desc.MipLevels));
+							dst_box.bottom += std::max(1u, desc.Height >> (SrcSubresource % desc.MipLevels));
+							dst_box.back += std::max(1u, desc.Depth >> (SrcSubresource % desc.MipLevels));
 						}
 						break;
 					}
@@ -1604,6 +1590,7 @@ void D3D11DeviceContext::invoke_bind_default_state_events()
 
 	reshade::invoke_addon_event<reshade::addon_event::bind_index_buffer>(this, reshade::api::resource {}, 0, 0);
 	reshade::invoke_addon_event<reshade::addon_event::bind_vertex_buffers>(this, 0, D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT, reinterpret_cast<const reshade::api::resource *>(null_objects), reinterpret_cast<const uint64_t *>(null_objects), reinterpret_cast<const uint32_t *>(null_objects));
+	reshade::invoke_addon_event<reshade::addon_event::bind_stream_output_buffers>(this, 0, D3D11_SO_BUFFER_SLOT_COUNT, reinterpret_cast<const reshade::api::resource *>(null_objects), reinterpret_cast<const uint64_t *>(null_objects), nullptr, nullptr, nullptr);
 
 	reshade::invoke_addon_event<reshade::addon_event::bind_render_targets_and_depth_stencil>(this, D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, reinterpret_cast<const reshade::api::resource_view *>(null_objects), reshade::api::resource_view {});
 

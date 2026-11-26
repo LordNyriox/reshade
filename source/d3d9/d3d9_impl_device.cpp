@@ -360,8 +360,11 @@ bool reshade::d3d9::device_impl::create_resource(const api::resource_desc &desc,
 
 					if (initial_data != nullptr)
 					{
+						levels = IDirect3DCubeTexture9_GetLevelCount(reinterpret_cast<IDirect3DCubeTexture9 *>(out_resource->handle));
+
+						// Only the first level of each face is uploaded if the number of levels was chosen automatically
 						for (uint32_t subresource = 0; subresource < static_cast<uint32_t>(desc.texture.depth_or_layers) * (desc.texture.levels == 0 ? 1u : static_cast<uint32_t>(desc.texture.levels)); ++subresource)
-							update_texture_region(initial_data[subresource], *out_resource, subresource, nullptr);
+							update_texture_region(initial_data[subresource], *out_resource, desc.texture.levels == 0 ? subresource * levels : subresource, nullptr);
 					}
 					return true;
 				}
@@ -954,8 +957,9 @@ bool reshade::d3d9::device_impl::map_texture_region(api::resource resource, uint
 		break;
 	case D3DRTYPE_VOLUMETEXTURE:
 		{
+			D3DBOX d3d_box;
 			D3DLOCKED_BOX locked_box;
-			if (SUCCEEDED(IDirect3DVolumeTexture9_LockBox(static_cast<IDirect3DVolumeTexture9 *>(object), subresource, &locked_box, reinterpret_cast<const D3DBOX *>(box), convert_access_flags(access))))
+			if (SUCCEEDED(IDirect3DVolumeTexture9_LockBox(static_cast<IDirect3DVolumeTexture9 *>(object), subresource, &locked_box, convert_subresource_box(box, d3d_box), convert_access_flags(access))))
 			{
 				out_data->data = locked_box.pBits;
 				out_data->row_pitch = locked_box.RowPitch;
@@ -1030,6 +1034,9 @@ void reshade::d3d9::device_impl::update_buffer_region(const void *data, api::res
 {
 	if (data == nullptr)
 		return;
+
+	if (UINT64_MAX == size)
+		size = get_resource_desc(dst).buffer.size - dst_offset;
 
 	if (void *mapped_data;
 		map_buffer_region(dst, dst_offset, size, api::map_access::write_only, &mapped_data))
@@ -1128,18 +1135,22 @@ void reshade::d3d9::device_impl::update_texture_region(const api::subresource_da
 		}
 		else
 		{
-			const size_t row_size = std::min(mapped_data.row_pitch, data.row_pitch);
+			size_t row_size = api::format_row_pitch(desc.texture.format, width);
+			row_size = std::min(row_size, static_cast<size_t>(std::min(mapped_data.row_pitch, data.row_pitch)));
+			// Block compressed formats have a row of blocks, rather than a row of pixels
+			const size_t num_rows = api::format_slice_pitch(desc.texture.format, 1, height);
 
 			for (size_t z = 0; z < depth; ++z)
 			{
 				const auto dst_slice = static_cast<uint8_t *>(mapped_data.data) + z * mapped_data.slice_pitch;
 				const auto src_slice = static_cast<const uint8_t *>(data.data) + z * data.slice_pitch;
 
-				for (size_t y = 0; y < height; ++y)
+				for (size_t y = 0; y < num_rows; ++y)
 				{
 					std::memcpy(
 						dst_slice + y * mapped_data.row_pitch,
-						src_slice + y * data.row_pitch, row_size);
+						src_slice + y * data.row_pitch,
+						row_size);
 				}
 			}
 		}
@@ -1355,17 +1366,7 @@ bool reshade::d3d9::device_impl::create_pipeline(api::pipeline_layout, uint32_t 
 		}
 	}
 
-	if (FAILED(_orig->BeginStateBlock()))
-		goto exit_failure;
-
-	_orig->SetVertexShader(vertex_shader.get());
-	_orig->SetPixelShader(pixel_shader.get());
-
-	if (input_layout != nullptr)
-	{
-		_orig->SetVertexDeclaration(input_layout.get());
-	}
-	else
+	if (input_layout == nullptr)
 	{
 		// Resize vertex buffer which holds vertex indices when necessary
 		D3DVERTEXBUFFER_DESC default_input_stream_desc;
@@ -1403,7 +1404,21 @@ bool reshade::d3d9::device_impl::create_pipeline(api::pipeline_layout, uint32_t 
 				goto exit_failure;
 			}
 		}
+	}
 
+	// Start recording state block
+	if (FAILED(_orig->BeginStateBlock()))
+		goto exit_failure;
+
+	_orig->SetVertexShader(vertex_shader.get());
+	_orig->SetPixelShader(pixel_shader.get());
+
+	if (input_layout != nullptr)
+	{
+		_orig->SetVertexDeclaration(input_layout.get());
+	}
+	else
+	{
 		// Setup default input (so that vertex shaders can get the vertex IDs)
 		_orig->SetStreamSource(0, _default_input_stream.get(), 0, sizeof(float));
 		_orig->SetVertexDeclaration(_default_input_layout.get());
@@ -1559,6 +1574,7 @@ bool reshade::d3d9::device_impl::create_pipeline_layout(uint32_t param_count, co
 			merged_range.binding = params[i].push_constants.binding;
 			merged_range.dx_register_index = params[i].push_constants.dx_register_index;
 			merged_range.dx_register_space = params[i].push_constants.dx_register_space;
+			merged_range.visibility = params[i].push_constants.visibility;
 			merged_range.type = api::descriptor_type::constant_buffer;
 			if (merged_range.dx_register_space != 0)
 				return false;
@@ -1629,10 +1645,11 @@ void reshade::d3d9::device_impl::free_descriptor_tables(uint32_t count, const ap
 
 void reshade::d3d9::device_impl::get_descriptor_heap_offset(api::descriptor_table table, uint32_t binding, uint32_t array_offset, api::descriptor_heap *heap, uint32_t *offset) const
 {
-	assert(table != 0 && array_offset == 0 && heap != nullptr && offset != nullptr);
+	assert(table != 0 && array_offset == 0 && heap != nullptr);
 
 	*heap = { 0 }; // Not implemented
-	*offset = binding;
+	if (offset != nullptr)
+		*offset = binding;
 }
 
 void reshade::d3d9::device_impl::copy_descriptor_tables(uint32_t count, const api::descriptor_table_copy *copies)

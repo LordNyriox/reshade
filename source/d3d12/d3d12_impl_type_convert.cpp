@@ -66,11 +66,7 @@ void reshade::d3d12::convert_subresource_box(const reshade::api::subresource_box
 	{
 		width = std::max(1u, static_cast<UINT>(desc.Width) >> (subresource % desc.MipLevels));
 		height = std::max(1u, desc.Height >> (subresource % desc.MipLevels));
-
-		if (desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D)
-			depth = std::max(1u, static_cast<UINT>(desc.DepthOrArraySize) >> (subresource % desc.MipLevels));
-		else
-			depth = 1;
+		depth = (desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D) ? std::max(1u, static_cast<UINT>(desc.DepthOrArraySize) >> (subresource % desc.MipLevels)) : 1u;
 	}
 }
 
@@ -355,9 +351,11 @@ reshade::api::sampler_desc reshade::d3d12::convert_sampler_desc(const D3D12_STAT
 	case D3D12_STATIC_BORDER_COLOR_OPAQUE_BLACK:
 	case D3D12_STATIC_BORDER_COLOR_OPAQUE_BLACK_UINT:
 		std::fill_n(desc.border_color, 3, 0.0f);
+		desc.border_color[3] = 1.0f;
 		break;
 	case D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE:
 	case D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE_UINT:
+		std::fill_n(desc.border_color, 4, 1.0f);
 		break;
 	}
 
@@ -464,6 +462,11 @@ void reshade::d3d12::convert_resource_desc(const api::resource_desc &desc, D3D12
 	// D3D12_RESOURCE_DESC1 is a superset of D3D12_RESOURCE_DESC
 	convert_resource_desc(desc, reinterpret_cast<D3D12_RESOURCE_DESC &>(internal_desc), heap_props, heap_flags);
 }
+void reshade::d3d12::convert_resource_desc(const api::resource_desc &desc, D3D12_RESOURCE_DESC2 &internal_desc, D3D12_HEAP_PROPERTIES &heap_props, D3D12_HEAP_FLAGS &heap_flags)
+{
+	// D3D12_RESOURCE_DESC2 is a superset of D3D12_RESOURCE_DESC
+	convert_resource_desc(desc, reinterpret_cast<D3D12_RESOURCE_DESC &>(internal_desc), heap_props, heap_flags);
+}
 reshade::api::resource_desc reshade::d3d12::convert_resource_desc(const D3D12_RESOURCE_DESC &internal_desc, const D3D12_HEAP_PROPERTIES &heap_props, D3D12_HEAP_FLAGS heap_flags)
 {
 	api::resource_desc desc = {};
@@ -565,6 +568,11 @@ reshade::api::resource_desc reshade::d3d12::convert_resource_desc(const D3D12_RE
 reshade::api::resource_desc reshade::d3d12::convert_resource_desc(const D3D12_RESOURCE_DESC1 &internal_desc, const D3D12_HEAP_PROPERTIES &heap_props, D3D12_HEAP_FLAGS heap_flags)
 {
 	// D3D12_RESOURCE_DESC1 is a superset of D3D12_RESOURCE_DESC
+	return convert_resource_desc(reinterpret_cast<const D3D12_RESOURCE_DESC &>(internal_desc), heap_props, heap_flags);
+}
+reshade::api::resource_desc reshade::d3d12::convert_resource_desc(const D3D12_RESOURCE_DESC2 &internal_desc, const D3D12_HEAP_PROPERTIES &heap_props, D3D12_HEAP_FLAGS heap_flags)
+{
+	// D3D12_RESOURCE_DESC2 is a superset of D3D12_RESOURCE_DESC
 	return convert_resource_desc(reinterpret_cast<const D3D12_RESOURCE_DESC &>(internal_desc), heap_props, heap_flags);
 }
 
@@ -1545,13 +1553,11 @@ auto reshade::d3d12::convert_blend_factor(api::blend_factor value) -> D3D12_BLEN
 	case api::blend_factor::one_minus_dest_alpha:
 		return D3D12_BLEND_INV_DEST_ALPHA;
 	case api::blend_factor::constant_alpha:
-		assert(false);
-		[[fallthrough]];
+		return D3D12_BLEND_ALPHA_FACTOR;
 	case api::blend_factor::constant_color:
 		return D3D12_BLEND_BLEND_FACTOR;
 	case api::blend_factor::one_minus_constant_alpha:
-		assert(false);
-		[[fallthrough]];
+		return D3D12_BLEND_INV_ALPHA_FACTOR;
 	case api::blend_factor::one_minus_constant_color:
 		return D3D12_BLEND_INV_BLEND_FACTOR;
 	case api::blend_factor::source_alpha_saturate:
@@ -1607,6 +1613,10 @@ auto reshade::d3d12::convert_blend_factor(D3D12_BLEND value) -> api::blend_facto
 		return api::blend_factor::source1_alpha;
 	case D3D12_BLEND_INV_SRC1_ALPHA:
 		return api::blend_factor::one_minus_source1_alpha;
+	case D3D12_BLEND_ALPHA_FACTOR:
+		return api::blend_factor::constant_alpha;
+	case D3D12_BLEND_INV_ALPHA_FACTOR:
+		return api::blend_factor::one_minus_constant_alpha;
 	}
 }
 auto reshade::d3d12::convert_fill_mode(api::fill_mode value) -> D3D12_FILL_MODE
@@ -1750,9 +1760,10 @@ auto reshade::d3d12::get_query_size(api::query_type type) -> std::pair<uint32_t,
 	{
 	default:
 	case api::query_type::occlusion:
-	case api::query_type::binary_occlusion:
 	case api::query_type::timestamp:
 		return std::make_pair<uint32_t, uint32_t>(sizeof(UINT64), 0u);
+	case api::query_type::binary_occlusion:
+		return std::make_pair<uint32_t, uint32_t>(sizeof(UINT32), 0u);
 	case api::query_type::pipeline_statistics:
 		return std::make_pair<uint32_t, uint32_t>(sizeof(D3D12_QUERY_DATA_PIPELINE_STATISTICS), 0u);
 	case api::query_type::stream_output_statistics_0:
@@ -2208,18 +2219,18 @@ void reshade::d3d12::convert_acceleration_structure_build_input(const api::accel
 	switch (geometry.Type)
 	{
 	case D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES:
-		geometry.Triangles.Transform3x4 = (build_input.triangles.transform_buffer != 0 ? reinterpret_cast<ID3D12Resource *>(build_input.triangles.transform_buffer.handle)->GetGPUVirtualAddress() : 0) + build_input.triangles.transform_offset;
+		geometry.Triangles.Transform3x4 = build_input.triangles.transform_gpu_address;
 		geometry.Triangles.IndexFormat = convert_format(build_input.triangles.index_format);
 		geometry.Triangles.VertexFormat = convert_format(build_input.triangles.vertex_format);
 		geometry.Triangles.IndexCount = build_input.triangles.index_count;
 		geometry.Triangles.VertexCount = build_input.triangles.vertex_count;
-		geometry.Triangles.IndexBuffer = (build_input.triangles.index_buffer != 0 ? reinterpret_cast<ID3D12Resource *>(build_input.triangles.index_buffer.handle)->GetGPUVirtualAddress() : 0) + build_input.triangles.index_offset;
-		geometry.Triangles.VertexBuffer.StartAddress = (build_input.triangles.vertex_buffer != 0 ? reinterpret_cast<ID3D12Resource *>(build_input.triangles.vertex_buffer.handle)->GetGPUVirtualAddress() : 0) + build_input.triangles.vertex_offset;
+		geometry.Triangles.IndexBuffer = build_input.triangles.index_gpu_address;
+		geometry.Triangles.VertexBuffer.StartAddress = build_input.triangles.vertex_gpu_address;
 		geometry.Triangles.VertexBuffer.StrideInBytes = build_input.triangles.vertex_stride;
 		break;
 	case D3D12_RAYTRACING_GEOMETRY_TYPE_PROCEDURAL_PRIMITIVE_AABBS:
 		geometry.AABBs.AABBCount = build_input.aabbs.count;
-		geometry.AABBs.AABBs.StartAddress = (build_input.aabbs.buffer != 0 ? reinterpret_cast<ID3D12Resource *>(build_input.aabbs.buffer.handle)->GetGPUVirtualAddress() : 0) + build_input.aabbs.offset;
+		geometry.AABBs.AABBs.StartAddress = build_input.aabbs.gpu_address;
 		geometry.AABBs.AABBs.StrideInBytes = build_input.aabbs.stride;
 		break;
 	}
@@ -2234,17 +2245,17 @@ reshade::api::acceleration_structure_build_input reshade::d3d12::convert_acceler
 	switch (geometry.Type)
 	{
 	case D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES:
-		result.triangles.vertex_offset = geometry.Triangles.VertexBuffer.StartAddress;
+		result.triangles.vertex_gpu_address = geometry.Triangles.VertexBuffer.StartAddress;
 		result.triangles.vertex_count = geometry.Triangles.VertexCount;
 		result.triangles.vertex_stride = geometry.Triangles.VertexBuffer.StrideInBytes;
 		result.triangles.vertex_format = convert_format(geometry.Triangles.VertexFormat);
-		result.triangles.index_offset = geometry.Triangles.IndexBuffer;
+		result.triangles.index_gpu_address = geometry.Triangles.IndexBuffer;
 		result.triangles.index_count = geometry.Triangles.IndexCount;
 		result.triangles.index_format = convert_format(geometry.Triangles.IndexFormat);
-		result.triangles.transform_offset = geometry.Triangles.Transform3x4;
+		result.triangles.transform_gpu_address = geometry.Triangles.Transform3x4;
 		break;
 	case D3D12_RAYTRACING_GEOMETRY_TYPE_PROCEDURAL_PRIMITIVE_AABBS:
-		result.aabbs.offset = geometry.AABBs.AABBs.StartAddress;
+		result.aabbs.gpu_address = geometry.AABBs.AABBs.StartAddress;
 		assert(geometry.AABBs.AABBCount <= std::numeric_limits<uint32_t>::max());
 		result.aabbs.count = static_cast<uint32_t>(geometry.AABBs.AABBCount);
 		result.aabbs.stride = geometry.AABBs.AABBs.StrideInBytes;

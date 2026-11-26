@@ -48,7 +48,6 @@ DXGISwapChain::DXGISwapChain(IDXGIFactory *factory, D3D10Device *device, IDXGISw
 	DXGISwapChain *const swapchain_proxy = this;
 	_orig->SetPrivateData(__uuidof(DXGISwapChain), sizeof(swapchain_proxy), &swapchain_proxy);
 
-	reshade::create_effect_runtime(_impl, device);
 	on_init(false);
 }
 DXGISwapChain::DXGISwapChain(IDXGIFactory *factory, D3D10Device *device, IDXGISwapChain1 *original) :
@@ -72,7 +71,6 @@ DXGISwapChain::DXGISwapChain(IDXGIFactory *factory, D3D11Device *device, IDXGISw
 	DXGISwapChain *const swapchain_proxy = this;
 	_orig->SetPrivateData(__uuidof(DXGISwapChain), sizeof(swapchain_proxy), &swapchain_proxy);
 
-	reshade::create_effect_runtime(_impl, device->_immediate_context);
 	on_init(false);
 }
 DXGISwapChain::DXGISwapChain(IDXGIFactory *factory, D3D11Device *device, IDXGISwapChain1 *original) :
@@ -101,13 +99,11 @@ DXGISwapChain::DXGISwapChain(IDXGIFactory *factory, D3D12CommandQueue *command_q
 	DXGISwapChain *const swapchain_proxy = this;
 	_orig->SetPrivateData(__uuidof(DXGISwapChain), sizeof(swapchain_proxy), &swapchain_proxy);
 
-	reshade::create_effect_runtime(_impl, command_queue);
 	on_init(false);
 }
 DXGISwapChain::~DXGISwapChain()
 {
 	on_reset(false);
-	reshade::destroy_effect_runtime(_impl);
 
 	// Remove pointer to this proxy object from the private data of the swap chain (in case the swap chain unexpectedly survives)
 	_orig->SetPrivateData(__uuidof(DXGISwapChain), 0, nullptr);
@@ -287,7 +283,7 @@ HRESULT STDMETHODCALLTYPE DXGISwapChain::Present(UINT SyncInterval, UINT Flags)
 	const HRESULT hr = _orig->Present(SyncInterval, Flags);
 	g_in_dxgi_runtime = false;
 
-	on_finish_present(hr);
+	on_finish_present(hr, Flags);
 
 	return hr;
 }
@@ -303,7 +299,7 @@ HRESULT STDMETHODCALLTYPE DXGISwapChain::SetFullscreenState(BOOL Fullscreen, IDX
 		this, Fullscreen ? "TRUE" : "FALSE", pTarget);
 
 #if RESHADE_ADDON
-	_current_fullscreen_state = -1;
+	_orig_desc.Windowed = -1;
 
 	HMONITOR hmonitor = nullptr;
 	if (pTarget != nullptr)
@@ -315,7 +311,7 @@ HRESULT STDMETHODCALLTYPE DXGISwapChain::SetFullscreenState(BOOL Fullscreen, IDX
 
 	if (reshade::invoke_addon_event<reshade::addon_event::set_fullscreen_state>(_impl, Fullscreen != FALSE, hmonitor))
 	{
-		_current_fullscreen_state = Fullscreen;
+		_orig_desc.Windowed = !Fullscreen;
 		return S_OK;
 	}
 #endif
@@ -329,16 +325,18 @@ HRESULT STDMETHODCALLTYPE DXGISwapChain::SetFullscreenState(BOOL Fullscreen, IDX
 HRESULT STDMETHODCALLTYPE DXGISwapChain::GetFullscreenState(BOOL *pFullscreen, IDXGIOutput **ppTarget)
 {
 #if RESHADE_ADDON
-	if (_current_fullscreen_state >= 0)
+	if (_orig_desc.Windowed >= 0)
 	{
 		if (pFullscreen != nullptr)
-			*pFullscreen = _current_fullscreen_state;
+		{
+			*pFullscreen = !_orig_desc.Windowed;
+		}
 
 		if (ppTarget != nullptr)
 		{
 			*ppTarget = nullptr;
 			// Only set to a pointer to the output target when the mode is fullscreen
-			if (_current_fullscreen_state != 0)
+			if (!_orig_desc.Windowed)
 				GetContainingOutput(ppTarget);
 		}
 
@@ -355,33 +353,38 @@ HRESULT STDMETHODCALLTYPE DXGISwapChain::GetFullscreenState(BOOL *pFullscreen, I
 HRESULT STDMETHODCALLTYPE DXGISwapChain::GetDesc(DXGI_SWAP_CHAIN_DESC *pDesc)
 {
 	const bool was_in_dxgi_runtime = g_in_dxgi_runtime;
-
-#if RESHADE_ADDON
-	if (_is_desc_modified)
-	{
-		assert(pDesc != nullptr);
-
-		*pDesc = _orig_desc;
-
-		// Get actual swap chain size
-		if (_orig_desc.BufferDesc.Width == 0 || _orig_desc.BufferDesc.Height == 0)
-		{
-			g_in_dxgi_runtime = true;
-			DXGI_SWAP_CHAIN_DESC desc = {};
-			_orig->GetDesc(&desc);
-			g_in_dxgi_runtime = was_in_dxgi_runtime;
-
-			pDesc->BufferDesc.Width = desc.BufferDesc.Width;
-			pDesc->BufferDesc.Height = desc.BufferDesc.Height;
-		}
-
-		return S_OK;
-	}
-#endif
-
 	g_in_dxgi_runtime = true;
 	const HRESULT hr = _orig->GetDesc(pDesc);
 	g_in_dxgi_runtime = was_in_dxgi_runtime;
+
+#if RESHADE_ADDON
+	if (FAILED(hr))
+		return hr;
+
+	if (_is_desc_modified)
+	{
+		// Keep actual swap chain size if none was specified
+		if (_orig_desc.BufferDesc.Width != 0 && _orig_desc.BufferDesc.Height != 0)
+		{
+			pDesc->BufferDesc.Width = _orig_desc.BufferDesc.Width;
+			pDesc->BufferDesc.Height = _orig_desc.BufferDesc.Height;
+		}
+		pDesc->BufferDesc.RefreshRate = _orig_desc.BufferDesc.RefreshRate;
+		pDesc->BufferDesc.Format = _orig_desc.BufferDesc.Format;
+		pDesc->SampleDesc = _orig_desc.SampleDesc;
+		pDesc->BufferUsage = _orig_desc.BufferUsage;
+		pDesc->BufferCount = _orig_desc.BufferCount;
+		pDesc->OutputWindow = _orig_desc.OutputWindow;
+		pDesc->SwapEffect = _orig_desc.SwapEffect;
+		pDesc->Flags = _orig_desc.Flags;
+	}
+
+	if (_orig_desc.Windowed >= 0)
+	{
+		pDesc->Windowed = _orig_desc.Windowed;
+	}
+#endif
+
 	return hr;
 }
 HRESULT STDMETHODCALLTYPE DXGISwapChain::ResizeBuffers(UINT BufferCount, UINT Width, UINT Height, DXGI_FORMAT NewFormat, UINT SwapChainFlags)
@@ -398,13 +401,14 @@ HRESULT STDMETHODCALLTYPE DXGISwapChain::ResizeBuffers(UINT BufferCount, UINT Wi
 	// Handle update of the swap chain description
 #if RESHADE_ADDON
 	const DXGI_SWAP_CHAIN_DESC prev_orig_desc = _orig_desc;
+	const bool prev_is_desc_modified = _is_desc_modified;
 	{
 		g_in_dxgi_runtime = true;
 		DXGI_SWAP_CHAIN_DESC desc = {};
 		_orig->GetDesc(&desc);
 		g_in_dxgi_runtime = was_in_dxgi_runtime;
 
-		// Restore default parameters to tho original values, rather than leaving them at the last values potentially overriden by an add-on
+		// Restore default parameters to the original values, rather than leaving them at the last values potentially overridden by an add-on
 		if (0 == BufferCount)
 			BufferCount = _orig_desc.BufferCount;
 		if (DXGI_FORMAT_UNKNOWN == NewFormat)
@@ -444,6 +448,7 @@ HRESULT STDMETHODCALLTYPE DXGISwapChain::ResizeBuffers(UINT BufferCount, UINT Wi
 	{
 #if RESHADE_ADDON
 		_orig_desc = prev_orig_desc;
+		_is_desc_modified = prev_is_desc_modified;
 #endif
 
 		reshade::log::message(reshade::log::level::warning, "IDXGISwapChain::ResizeBuffers failed with error code DXGI_ERROR_INVALID_CALL.");
@@ -453,6 +458,7 @@ HRESULT STDMETHODCALLTYPE DXGISwapChain::ResizeBuffers(UINT BufferCount, UINT Wi
 	{
 #if RESHADE_ADDON
 		_orig_desc = prev_orig_desc;
+		_is_desc_modified = prev_is_desc_modified;
 #endif
 
 		reshade::log::message(reshade::log::level::error, "IDXGISwapChain::ResizeBuffers failed with error code %s!", reshade::log::hr_to_string(hr).c_str());
@@ -486,46 +492,31 @@ HRESULT STDMETHODCALLTYPE DXGISwapChain::GetDesc1(DXGI_SWAP_CHAIN_DESC1 *pDesc)
 	assert(_interface_version >= 1);
 
 	const bool was_in_dxgi_runtime = g_in_dxgi_runtime;
+	g_in_dxgi_runtime = true;
+	const HRESULT hr = static_cast<IDXGISwapChain1 *>(_orig)->GetDesc1(pDesc);
+	g_in_dxgi_runtime = was_in_dxgi_runtime;
 
 #if RESHADE_ADDON
+	if (FAILED(hr))
+		return hr;
+
 	if (_is_desc_modified)
 	{
-		assert(pDesc != nullptr);
-
-		pDesc->Format = _orig_desc.BufferDesc.Format;
-		pDesc->Stereo = FALSE; // For now we don't carry this information
-		pDesc->SampleDesc = _orig_desc.SampleDesc;
-		pDesc->BufferUsage = _orig_desc.BufferUsage;
-		pDesc->BufferCount = _orig_desc.BufferCount;
-		pDesc->Scaling = _orig_desc.BufferDesc.Scaling == DXGI_MODE_SCALING_CENTERED ? DXGI_SCALING_ASPECT_RATIO_STRETCH : DXGI_SCALING_STRETCH;
-		pDesc->SwapEffect = _orig_desc.SwapEffect;
-		pDesc->AlphaMode = DXGI_ALPHA_MODE_UNSPECIFIED;
-		pDesc->Flags = _orig_desc.Flags;
-
-		// Get actual swap chain size
-		if (_orig_desc.BufferDesc.Width == 0 || _orig_desc.BufferDesc.Height == 0)
-		{
-			g_in_dxgi_runtime = true;
-			DXGI_SWAP_CHAIN_DESC desc = {};
-			_orig->GetDesc(&desc);
-			g_in_dxgi_runtime = was_in_dxgi_runtime;
-
-			pDesc->Width = desc.BufferDesc.Width;
-			pDesc->Height = desc.BufferDesc.Height;
-		}
-		else
+		// Keep actual swap chain size if none was specified
+		if (_orig_desc.BufferDesc.Width != 0 && _orig_desc.BufferDesc.Height != 0)
 		{
 			pDesc->Width = _orig_desc.BufferDesc.Width;
 			pDesc->Height = _orig_desc.BufferDesc.Height;
 		}
-
-		return S_OK;
+		pDesc->Format = _orig_desc.BufferDesc.Format;
+		pDesc->SampleDesc = _orig_desc.SampleDesc;
+		pDesc->BufferUsage = _orig_desc.BufferUsage;
+		pDesc->BufferCount = _orig_desc.BufferCount;
+		pDesc->SwapEffect = _orig_desc.SwapEffect;
+		pDesc->Flags = _orig_desc.Flags;
 	}
 #endif
 
-	g_in_dxgi_runtime = true;
-	const HRESULT hr = static_cast<IDXGISwapChain1 *>(_orig)->GetDesc1(pDesc);
-	g_in_dxgi_runtime = was_in_dxgi_runtime;
 	return hr;
 }
 HRESULT STDMETHODCALLTYPE DXGISwapChain::GetFullscreenDesc(DXGI_SWAP_CHAIN_FULLSCREEN_DESC *pDesc)
@@ -580,7 +571,7 @@ HRESULT STDMETHODCALLTYPE DXGISwapChain::Present1(UINT SyncInterval, UINT Presen
 	const HRESULT hr = static_cast<IDXGISwapChain1 *>(_orig)->Present1(SyncInterval, PresentFlags, pPresentParameters);
 	g_in_dxgi_runtime = false;
 
-	on_finish_present(hr);
+	on_finish_present(hr, PresentFlags);
 
 	return hr;
 }
@@ -764,6 +755,7 @@ HRESULT STDMETHODCALLTYPE DXGISwapChain::ResizeBuffers1(UINT BufferCount, UINT W
 	// Handle update of the swap chain description
 #if RESHADE_ADDON
 	const DXGI_SWAP_CHAIN_DESC prev_orig_desc = _orig_desc;
+	const bool prev_is_desc_modified = _is_desc_modified;
 	{
 		g_in_dxgi_runtime = true;
 		HWND hwnd = nullptr;
@@ -775,7 +767,7 @@ HRESULT STDMETHODCALLTYPE DXGISwapChain::ResizeBuffers1(UINT BufferCount, UINT W
 		_orig->GetFullscreenState(&fullscreen, nullptr);
 		g_in_dxgi_runtime = was_in_dxgi_runtime;
 
-		// Restore default parameters to tho original values, rather than leaving them at the last values potentially overriden by an add-on
+		// Restore default parameters to the original values, rather than leaving them at the last values potentially overridden by an add-on
 		if (0 == BufferCount)
 			BufferCount = _orig_desc.BufferCount;
 		if (DXGI_FORMAT_UNKNOWN == NewFormat)
@@ -804,20 +796,37 @@ HRESULT STDMETHODCALLTYPE DXGISwapChain::ResizeBuffers1(UINT BufferCount, UINT W
 			_is_desc_modified = false;
 		}
 	}
+
+	temp_mem<UINT> creation_node_masks(BufferCount);
+	if (nullptr != pCreationNodeMask)
+	{
+		for (UINT i = 0; i < BufferCount; ++i)
+		{
+			creation_node_masks[i] = pCreationNodeMask[i % _orig_desc.BufferCount];
+		}
+		pCreationNodeMask = creation_node_masks.p;
+	}
 #endif
 
 	// Need to extract the original command queue object from the proxies passed in
-	assert(ppPresentQueue != nullptr);
 	temp_mem<IUnknown *> present_queues(BufferCount);
-	for (UINT i = 0; i < BufferCount; ++i)
+	if (nullptr != ppPresentQueue)
 	{
-		present_queues[i] = ppPresentQueue[i];
-		com_ptr<IUnknown> command_queue_proxy;
-		query_device(present_queues[i], command_queue_proxy);
+		for (UINT i = 0; i < BufferCount; ++i)
+		{
+#if RESHADE_ADDON
+			present_queues[i] = ppPresentQueue[i % _orig_desc.BufferCount];
+#else
+			present_queues[i] = ppPresentQueue[i];
+#endif
+			com_ptr<IUnknown> command_queue_proxy;
+			query_device(present_queues[i], command_queue_proxy);
+		}
+		ppPresentQueue = present_queues.p;
 	}
 
 	g_in_dxgi_runtime = true;
-	const HRESULT hr = static_cast<IDXGISwapChain3 *>(_orig)->ResizeBuffers1(BufferCount, Width, Height, NewFormat, SwapChainFlags, pCreationNodeMask, present_queues.p);
+	const HRESULT hr = static_cast<IDXGISwapChain3 *>(_orig)->ResizeBuffers1(BufferCount, Width, Height, NewFormat, SwapChainFlags, pCreationNodeMask, ppPresentQueue);
 	g_in_dxgi_runtime = was_in_dxgi_runtime;
 	if (SUCCEEDED(hr))
 	{
@@ -827,6 +836,7 @@ HRESULT STDMETHODCALLTYPE DXGISwapChain::ResizeBuffers1(UINT BufferCount, UINT W
 	{
 #if RESHADE_ADDON
 		_orig_desc = prev_orig_desc;
+		_is_desc_modified = prev_is_desc_modified;
 #endif
 
 		reshade::log::message(reshade::log::level::warning, "IDXGISwapChain3::ResizeBuffers1 failed with error code DXGI_ERROR_INVALID_CALL.");
@@ -836,6 +846,7 @@ HRESULT STDMETHODCALLTYPE DXGISwapChain::ResizeBuffers1(UINT BufferCount, UINT W
 	{
 #if RESHADE_ADDON
 		_orig_desc = prev_orig_desc;
+		_is_desc_modified = prev_is_desc_modified;
 #endif
 
 		reshade::log::message(reshade::log::level::error, "IDXGISwapChain3::ResizeBuffers1 failed with error code %s!", reshade::log::hr_to_string(hr).c_str());
@@ -896,11 +907,30 @@ private:
 	BOOL was_protected = FALSE;
 };
 
-void DXGISwapChain::on_init([[maybe_unused]] bool resize)
+void DXGISwapChain::on_init(bool resize)
 {
 	assert(!_is_initialized);
 
+	reshade::api::command_queue *graphics_queue = nullptr;
+	switch (_direct3d_version)
+	{
+	case reshade::api::device_api::d3d10:
+		graphics_queue = static_cast<D3D10Device *>(static_cast<ID3D10Device *>(_direct3d_device));
+		break;
+	case reshade::api::device_api::d3d11:
+		graphics_queue = static_cast<D3D11Device *>(static_cast<ID3D11Device *>(_direct3d_device))->_immediate_context;
+		break;
+	case reshade::api::device_api::d3d12:
+		graphics_queue = static_cast<D3D12CommandQueue *>(_direct3d_command_queue);
+		break;
+	}
+
 	const unique_direct3d_device_lock lock(_direct3d_device, _direct3d_version, _direct3d_version == reshade::api::device_api::d3d12 ? static_cast<D3D12CommandQueue *>(_direct3d_command_queue)->_mutex : _impl_mutex);
+
+	// Some games (like Mass Effect: Andromeda) use the D3D11 immediate device context in a worker thread while the main thread is creating a swap chain
+	// Since it is also accessed during effect runtime creation, this has to happen while multi-thread protection is enabled
+	if (!resize)
+		reshade::create_effect_runtime(_impl, graphics_queue);
 
 #if RESHADE_ADDON
 	reshade::invoke_addon_event<reshade::addon_event::init_swapchain>(_impl, resize);
@@ -925,20 +955,23 @@ void DXGISwapChain::on_init([[maybe_unused]] bool resize)
 
 	_is_initialized = true;
 }
-void DXGISwapChain::on_reset([[maybe_unused]] bool resize)
+void DXGISwapChain::on_reset(bool resize)
 {
-	if (!_is_initialized)
-		return;
-
 	const unique_direct3d_device_lock lock(_direct3d_device, _direct3d_version, _direct3d_version == reshade::api::device_api::d3d12 ? static_cast<D3D12CommandQueue *>(_direct3d_command_queue)->_mutex : _impl_mutex);
 
-	reshade::reset_effect_runtime(_impl);
+	if (_is_initialized)
+	{
+		reshade::reset_effect_runtime(_impl);
 
 #if RESHADE_ADDON
-	reshade::invoke_addon_event<reshade::addon_event::destroy_swapchain>(_impl, resize);
+		reshade::invoke_addon_event<reshade::addon_event::destroy_swapchain>(_impl, resize);
 #endif
 
-	_is_initialized = false;
+		_is_initialized = false;
+	}
+
+	if (!resize)
+		reshade::destroy_effect_runtime(_impl);
 }
 
 void DXGISwapChain::on_present(UINT flags, [[maybe_unused]] const DXGI_PRESENT_PARAMETERS *params)
@@ -1011,8 +1044,11 @@ void DXGISwapChain::on_present(UINT flags, [[maybe_unused]] const DXGI_PRESENT_P
 	}
 }
 
-void DXGISwapChain::on_finish_present(HRESULT hr)
+void DXGISwapChain::on_finish_present(HRESULT hr, UINT flags)
 {
+	if ((flags & DXGI_PRESENT_TEST) != 0)
+		return;
+
 	_was_still_drawing_last_frame = (hr == DXGI_ERROR_WAS_STILL_DRAWING);
 
 	if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET)

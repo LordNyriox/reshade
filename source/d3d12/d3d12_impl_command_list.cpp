@@ -92,6 +92,7 @@ void reshade::d3d12::command_list_impl::barrier(uint32_t count, const api::resou
 		else if (old_states[i] == api::resource_usage::undefined && new_states[i] == api::resource_usage::general)
 		{
 			barriers[k].Type = D3D12_RESOURCE_BARRIER_TYPE_ALIASING;
+			barriers[k].Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
 			barriers[k].Aliasing.pResourceBefore = nullptr;
 			barriers[k].Aliasing.pResourceAfter = reinterpret_cast<ID3D12Resource *>(resources[i].handle);
 		}
@@ -222,9 +223,9 @@ void reshade::d3d12::command_list_impl::bind_pipeline_states(uint32_t count, con
 			{
 				const float blend_constant[4] = {
 					((values[i]      ) & 0xFF) / 255.0f,
-					((values[i] >>  4) & 0xFF) / 255.0f,
 					((values[i] >>  8) & 0xFF) / 255.0f,
-					((values[i] >> 12) & 0xFF) / 255.0f
+					((values[i] >> 16) & 0xFF) / 255.0f,
+					((values[i] >> 24) & 0xFF) / 255.0f
 				};
 				_orig->OMSetBlendFactor(blend_constant);
 			}
@@ -237,16 +238,19 @@ void reshade::d3d12::command_list_impl::bind_pipeline_states(uint32_t count, con
 				if (SUCCEEDED(_orig->QueryInterface(&cmd_list8)))
 				{
 					cmd_list8->OMSetFrontAndBackStencilRef(values[i], values[i + 1]);
-					i += 1;
-					break;
 				}
+				else
+				{
+					assert(values[i] == values[i + 1]); // Separate reference values are not supported
+					_orig->OMSetStencilRef(values[i]);
+				}
+				i += 1;
 			}
 			else
 			{
 				_orig->OMSetStencilRef(values[i]);
-				break;
 			}
-			[[fallthrough]];
+			break;
 		case api::dynamic_state::back_stencil_reference_value:
 			assert(false);
 			break;
@@ -266,7 +270,7 @@ void reshade::d3d12::command_list_impl::bind_pipeline_states(uint32_t count, con
 			[[fallthrough]];
 		case api::dynamic_state::depth_bias_clamp:
 		case api::dynamic_state::depth_bias_slope_scaled:
-			assert(false);
+			assert(false); // Cannot set depth bias states individually
 			break;
 		case api::dynamic_state::ray_tracing_pipeline_stack_size:
 			// ID3D12StateObjectProperties *props = ...;
@@ -385,7 +389,7 @@ void reshade::d3d12::command_list_impl::push_descriptors(api::shader_stage stage
 			if ((stages & (api::shader_stage::all_compute | api::shader_stage::all_ray_tracing)) != 0)
 				_orig->SetComputeRootUnorderedAccessView(layout_param, view_address);
 			if ((stages & api::shader_stage::all_graphics) != 0)
-				_orig->SetGraphicsRootShaderResourceView(layout_param, view_address);
+				_orig->SetGraphicsRootUnorderedAccessView(layout_param, view_address);
 		}
 		return;
 	}
@@ -409,9 +413,12 @@ void reshade::d3d12::command_list_impl::push_descriptors(api::shader_stage stage
 		{
 			const auto &view_range = static_cast<const api::buffer_range *>(update.descriptors)[k];
 
-			D3D12_CONSTANT_BUFFER_VIEW_DESC view_desc;
-			view_desc.BufferLocation = _device->get_resource_gpu_address(view_range.buffer) + view_range.offset;
-			view_desc.SizeInBytes = static_cast<UINT>(view_range.size == UINT64_MAX ? reinterpret_cast<ID3D12Resource *>(view_range.buffer.handle)->GetDesc().Width - view_range.offset : view_range.size);
+			D3D12_CONSTANT_BUFFER_VIEW_DESC view_desc = {}; // Zero-initialized description creates a null descriptor
+			if (view_range.buffer != 0)
+			{
+				view_desc.BufferLocation = _device->get_resource_gpu_address(view_range.buffer) + view_range.offset;
+				view_desc.SizeInBytes = static_cast<UINT>(view_range.size == UINT64_MAX ? reinterpret_cast<ID3D12Resource *>(view_range.buffer.handle)->GetDesc().Width - view_range.offset : view_range.size);
+			}
 
 			_device->_orig->CreateConstantBufferView(&view_desc, base_handle);
 		}
@@ -494,7 +501,7 @@ void reshade::d3d12::command_list_impl::push_descriptors(api::shader_stage stage
 		_orig->SetGraphicsRootDescriptorTable(layout_param, base_handle_gpu);
 	}
 }
-void reshade::d3d12::command_list_impl::bind_descriptor_tables2(api::shader_stage stages, api::pipeline_layout layout, uint32_t first, uint32_t count, const api::descriptor_table *tables, uint32_t dynamic_offset_count, const uint32_t *dynamic_offsets)
+void reshade::d3d12::command_list_impl::bind_descriptor_tables2(api::shader_stage stages, api::pipeline_layout layout, uint32_t first, uint32_t count, const api::descriptor_table *tables, uint32_t, const uint32_t *)
 {
 	assert(tables != nullptr || count == 0);
 
@@ -593,6 +600,13 @@ void reshade::d3d12::command_list_impl::bind_vertex_buffers(uint32_t first, uint
 	temp_mem<D3D12_VERTEX_BUFFER_VIEW, D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT> views(count);
 	for (uint32_t i = 0; i < count; ++i)
 	{
+		// Buffer handles may be zero to unbind a slot
+		if (buffers[i] == 0)
+		{
+			views[i] = {};
+			continue;
+		}
+
 		const uint64_t offset = (offsets != nullptr ? offsets[i] : 0);
 
 		views[i].BufferLocation = _device->get_resource_gpu_address(buffers[i]) + offset;
@@ -609,12 +623,18 @@ void reshade::d3d12::command_list_impl::bind_stream_output_buffers(uint32_t firs
 	temp_mem<D3D12_STREAM_OUTPUT_BUFFER_VIEW, D3D12_SO_BUFFER_SLOT_COUNT> views(count);
 	for (uint32_t i = 0; i < count; ++i)
 	{
+		if (buffers[i] == 0)
+		{
+			views[i] = {};
+			continue;
+		}
+
 		const uint64_t offset = (offsets != nullptr) ? offsets[i] : 0;
 		const uint64_t counter_offset = (counter_offsets != nullptr) ? counter_offsets[i] : 0;
 
 		views[i].BufferLocation = _device->get_resource_gpu_address(buffers[i]) + offset;
-		views[i].SizeInBytes = (max_sizes != nullptr && max_sizes[i] != UINT64_MAX) ? max_sizes[0] : 0;
-		views[i].BufferFilledSizeLocation = _device->get_resource_gpu_address(counter_buffers[i]) + counter_offset;
+		views[i].SizeInBytes = (max_sizes != nullptr && max_sizes[i] != UINT64_MAX) ? max_sizes[i] : reinterpret_cast<ID3D12Resource *>(buffers[i].handle)->GetDesc().Width - offset;
+		views[i].BufferFilledSizeLocation = (counter_buffers != nullptr && counter_buffers[i] != 0) ? _device->get_resource_gpu_address(counter_buffers[i]) + counter_offset : 0;
 	}
 
 	_orig->SOSetTargets(first, count, views.p);
@@ -704,7 +724,7 @@ void reshade::d3d12::command_list_impl::copy_buffer_region(api::resource src, ui
 	assert(src != 0 && dst != 0);
 
 	if (UINT64_MAX == size)
-		size = reinterpret_cast<ID3D12Resource *>(src.handle)->GetDesc().Width;
+		size = reinterpret_cast<ID3D12Resource *>(src.handle)->GetDesc().Width - src_offset;
 
 	_orig->CopyBufferRegion(reinterpret_cast<ID3D12Resource *>(dst.handle), dst_offset, reinterpret_cast<ID3D12Resource *>(src.handle), src_offset, size);
 }
@@ -855,7 +875,7 @@ void reshade::d3d12::command_list_impl::resolve_texture_region(api::resource src
 			src_rect.left = src_box->left;
 			src_rect.top = src_box->top;
 			src_rect.right = src_box->right;
-			src_rect.bottom = src_box->back;
+			src_rect.bottom = src_box->bottom;
 
 			assert((src_box->back - src_box->front) <= 1);
 		}
@@ -878,7 +898,10 @@ void reshade::d3d12::command_list_impl::resolve_texture_region(api::resource src
 		case api::format::b8g8r8a8_unorm_srgb:
 		case api::format::b8g8r8x8_unorm:
 		case api::format::b8g8r8x8_unorm_srgb:
+		case api::format::b5g6r5_unorm:
+		case api::format::b5g5r5a1_unorm:
 		case api::format::r10g10b10a2_unorm:
+		case api::format::r11g11b10_float:
 		case api::format::r16_unorm:
 		case api::format::r16_snorm:
 		case api::format::r16_float:
@@ -1005,8 +1028,9 @@ void reshade::d3d12::command_list_impl::generate_mipmaps(api::resource_view srv)
 	const D3D12_RESOURCE_DESC desc = reinterpret_cast<ID3D12Resource *>(resource.handle)->GetDesc();
 	const api::resource_view_desc view_desc = _device->get_resource_view_desc(srv);
 
-	const uint32_t levels = std::min(view_desc.texture.levels, static_cast<uint32_t>(desc.MipLevels));
-	if (levels == 1)
+	assert(view_desc.texture.first_level < desc.MipLevels);
+	const uint32_t levels = std::min(view_desc.texture.levels, desc.MipLevels - view_desc.texture.first_level);
+	if (levels <= 1)
 		return; // There are no mipmaps to generate
 
 	const uint32_t multiple_of_6_remainder = (levels - 1) % 6;
@@ -1164,7 +1188,7 @@ void reshade::d3d12::command_list_impl::build_acceleration_structure(api::accele
 
 		desc.Inputs.NumDescs = inputs->instances.count;
 		desc.Inputs.DescsLayout = inputs->instances.array_of_pointers ? D3D12_ELEMENTS_LAYOUT_ARRAY_OF_POINTERS : D3D12_ELEMENTS_LAYOUT_ARRAY;
-		desc.Inputs.InstanceDescs = _device->get_resource_gpu_address(inputs->instances.buffer) + inputs->instances.offset;
+		desc.Inputs.InstanceDescs = inputs->instances.gpu_address;
 	}
 	else
 	{

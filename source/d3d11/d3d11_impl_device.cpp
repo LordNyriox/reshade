@@ -180,7 +180,7 @@ bool reshade::d3d11::device_impl::check_format_support(api::format format, api::
 	if ((usage & api::resource_usage::unordered_access) != 0 && (support & D3D11_FORMAT_SUPPORT_TYPED_UNORDERED_ACCESS_VIEW) == 0)
 		return false;
 
-	if ((usage & (api::resource_usage::resolve_source | api::resource_usage::resolve_dest)) != 0 && (support & D3D10_FORMAT_SUPPORT_MULTISAMPLE_RESOLVE) == 0)
+	if ((usage & (api::resource_usage::resolve_source | api::resource_usage::resolve_dest)) != 0 && (support & D3D11_FORMAT_SUPPORT_MULTISAMPLE_RESOLVE) == 0)
 		return false;
 
 	return true;
@@ -698,12 +698,10 @@ void reshade::d3d11::device_impl::update_buffer_region(const void *data, api::re
 {
 	assert(dst != 0);
 
+	D3D11_BUFFER_DESC desc;
+	reinterpret_cast<ID3D11Buffer *>(dst.handle)->GetDesc(&desc);
 	if (UINT64_MAX == size)
-	{
-		D3D11_BUFFER_DESC desc;
-		reinterpret_cast<ID3D11Buffer *>(dst.handle)->GetDesc(&desc);
-		size = desc.ByteWidth;
-	}
+		size = desc.ByteWidth - dst_offset;
 
 	assert(dst_offset <= std::numeric_limits<UINT>::max() && size <= std::numeric_limits<UINT>::max());
 
@@ -715,7 +713,7 @@ void reshade::d3d11::device_impl::update_buffer_region(const void *data, api::re
 
 	const D3D11_BOX box = { static_cast<UINT>(dst_offset), 0, 0, static_cast<UINT>(dst_offset + size), 1, 1 };
 
-	immediate_context->UpdateSubresource(reinterpret_cast<ID3D11Resource *>(dst.handle), 0, dst_offset != 0 ? &box : nullptr, data, static_cast<UINT>(size), 0);
+	immediate_context->UpdateSubresource(reinterpret_cast<ID3D11Resource *>(dst.handle), 0, dst_offset == 0 && size == desc.ByteWidth ? nullptr : &box, data, static_cast<UINT>(size), 0);
 }
 void reshade::d3d11::device_impl::update_texture_region(const api::subresource_data &data, api::resource dst, uint32_t dst_subresource, const api::subresource_box *dst_box)
 {
@@ -1121,6 +1119,7 @@ bool reshade::d3d11::device_impl::create_pipeline(api::pipeline_layout, uint32_t
 				for (uint32_t k = 0; k < subobjects[i].count; ++k)
 					if (const auto state = static_cast<const api::dynamic_state *>(subobjects[i].data)[k];
 						state != api::dynamic_state::primitive_topology &&
+						state != api::dynamic_state::input_element_stride &&
 						state != api::dynamic_state::blend_constant &&
 						state != api::dynamic_state::sample_mask &&
 						state != api::dynamic_state::front_stencil_reference_value &&
@@ -1240,6 +1239,7 @@ bool reshade::d3d11::device_impl::create_pipeline_layout(uint32_t param_count, c
 			merged_range.binding = params[i].push_constants.binding;
 			merged_range.dx_register_index = params[i].push_constants.dx_register_index;
 			merged_range.dx_register_space = params[i].push_constants.dx_register_space;
+			merged_range.visibility = params[i].push_constants.visibility;
 			merged_range.type = api::descriptor_type::constant_buffer;
 			if (merged_range.dx_register_space != 0)
 				return false;
@@ -1313,10 +1313,11 @@ void reshade::d3d11::device_impl::free_descriptor_tables(uint32_t count, const a
 
 void reshade::d3d11::device_impl::get_descriptor_heap_offset(api::descriptor_table table, uint32_t binding, uint32_t array_offset, api::descriptor_heap *heap, uint32_t *offset) const
 {
-	assert(table != 0 && array_offset == 0 && heap != nullptr && offset != nullptr);
+	assert(table != 0 && array_offset == 0 && heap != nullptr);
 
 	*heap = { 0 }; // Not implemented
-	*offset = binding;
+	if (offset != nullptr)
+		*offset = binding;
 }
 
 void reshade::d3d11::device_impl::copy_descriptor_tables(uint32_t count, const api::descriptor_table_copy *copies)
@@ -1485,7 +1486,7 @@ bool reshade::d3d11::device_impl::create_fence(uint64_t initial_value, api::fenc
 			}
 		}
 	}
-	else
+	else if (!is_shared)
 	{
 		const auto impl = new fence_impl();
 		impl->current_value = initial_value;
@@ -1610,7 +1611,8 @@ bool reshade::d3d11::device_impl::wait(api::fence fence, uint64_t value, uint64_
 	if (com_ptr<IDXGIKeyedMutex> keyed_mutex;
 		SUCCEEDED(reinterpret_cast<IUnknown *>(fence.handle)->QueryInterface(&keyed_mutex)))
 	{
-		return SUCCEEDED(keyed_mutex->AcquireSync(value, timeout_ms));
+		// May return 'WAIT_TIMEOUT' or 'WAIT_ABANDONED', which are not caught by the 'SUCCEEDED' macro
+		return keyed_mutex->AcquireSync(value, timeout_ms) == S_OK;
 	}
 
 	return false;

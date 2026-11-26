@@ -39,6 +39,7 @@ namespace reshade::opengl
 		GLint _read_fbo = 0;
 		GLint _draw_fbo = 0;
 		GLint _viewport[4] = {};
+		GLdouble _depth_range[2] = {};
 		GLint _read_buffer = 0;
 		GLint _draw_buffers[8] = {};
 
@@ -59,7 +60,7 @@ namespace reshade::opengl
 		GLboolean _color_write_mask[8][4] = {};
 		GLint _sample_mask = 0;
 
-		GLint _polygon_mode = GL_NONE;
+		GLint _polygon_mode[2] = {}; // Compatibility contexts return separate values for front and back
 		GLboolean _cull_enable = GL_FALSE;
 		GLint _cull_mode = GL_NONE;
 		GLint _front_face = GL_NONE;

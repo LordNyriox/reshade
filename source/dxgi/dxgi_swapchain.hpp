@@ -106,10 +106,10 @@ public:
 	unsigned short _interface_version = 0;
 
 private:
-	void on_init([[maybe_unused]] bool resize);
-	void on_reset([[maybe_unused]] bool resize);
+	void on_init(bool resize);
+	void on_reset(bool resize);
 	void on_present(UINT flags, [[maybe_unused]] const DXGI_PRESENT_PARAMETERS *params = nullptr);
-	void on_finish_present(HRESULT hr);
+	void on_finish_present(HRESULT hr, UINT flags);
 
 	IUnknown *const _direct3d_device;
 	// The GOG Galaxy overlay scans the swap chain object memory for the D3D12 command queue, but fails if it cannot find at least two occurences of it.
@@ -130,8 +130,7 @@ private:
 #if RESHADE_ADDON
 public:
 	UINT _sync_interval = UINT_MAX;
-	BOOL _current_fullscreen_state = -1;
 	bool _is_desc_modified = false;
-	DXGI_SWAP_CHAIN_DESC _orig_desc = {};
+	DXGI_SWAP_CHAIN_DESC _orig_desc = { {}, {}, 0, 0, nullptr, -1 }; // Fullscreen state is -1 while not overriden by an add-on through the 'set_fullscreen_state' event
 #endif
 };

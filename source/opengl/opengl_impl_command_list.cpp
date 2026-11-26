@@ -347,7 +347,7 @@ void reshade::opengl::device_context_impl::update_current_window_height(api::res
 				gl.BindTexture(target, object);
 
 			GLenum level_target = target;
-			if (target == GL_TEXTURE_CUBE_MAP || target == GL_TEXTURE_CUBE_MAP_ARRAY)
+			if (target == GL_TEXTURE_CUBE_MAP)
 				level_target = GL_TEXTURE_CUBE_MAP_POSITIVE_X;
 
 			gl.GetTexLevelParameteriv(level_target, 0, GL_TEXTURE_HEIGHT, &height);
@@ -575,7 +575,7 @@ void reshade::opengl::device_context_impl::bind_pipeline_states(uint32_t count, 
 		case api::dynamic_state::primitive_topology:
 			_current_prim_mode = static_cast<GLenum>(convert_primitive_topology(static_cast<api::primitive_topology>(values[i])));
 			if (_current_prim_mode == GL_PATCHES)
-				gl.PatchParameteri(GL_PATCH_VERTICES, values[i] - static_cast<uint32_t>(api::primitive_topology::patch_list_01_cp));
+				gl.PatchParameteri(GL_PATCH_VERTICES, values[i] - static_cast<uint32_t>(api::primitive_topology::patch_list_01_cp) + 1);
 			break;
 		case api::dynamic_state::alpha_to_coverage_enable:
 			glEnableOrDisable(GL_SAMPLE_ALPHA_TO_COVERAGE, values[i]);
@@ -694,9 +694,9 @@ void reshade::opengl::device_context_impl::bind_pipeline_states(uint32_t count, 
 		case api::dynamic_state::blend_constant:
 			gl.BlendColor(
 				((values[i]      ) & 0xFF) / 255.0f,
-				((values[i] >>  4) & 0xFF) / 255.0f,
 				((values[i] >>  8) & 0xFF) / 255.0f,
-				((values[i] >> 12) & 0xFF) / 255.0f);
+				((values[i] >> 16) & 0xFF) / 255.0f,
+				((values[i] >> 24) & 0xFF) / 255.0f);
 			break;
 		case api::dynamic_state::render_target_write_mask:
 			gl.ColorMask(values[i] & 0x1, (values[i] >> 1) & 0x1, (values[i] >> 2) & 0x1, (values[i] >> 3) & 0x1);
@@ -705,7 +705,15 @@ void reshade::opengl::device_context_impl::bind_pipeline_states(uint32_t count, 
 			gl.PolygonMode(GL_FRONT_AND_BACK, convert_fill_mode(static_cast<api::fill_mode>(values[i])));
 			break;
 		case api::dynamic_state::cull_mode:
-			glEnableOrDisable(GL_CULL_FACE, convert_cull_mode(static_cast<api::cull_mode>(values[i])));
+			if (const GLenum cull_mode = convert_cull_mode(static_cast<api::cull_mode>(values[i])))
+			{
+				gl.Enable(GL_CULL_FACE);
+				gl.CullFace(cull_mode);
+			}
+			else
+			{
+				gl.Disable(GL_CULL_FACE);
+			}
 			break;
 		case api::dynamic_state::front_counter_clockwise:
 			gl.FrontFace(values[i] ? GL_CCW : GL_CW);
@@ -1110,14 +1118,12 @@ void reshade::opengl::device_context_impl::push_descriptors(api::shader_stage, a
 		for (uint32_t i = 0; i < update.count; ++i)
 		{
 			const auto &descriptor = static_cast<const api::sampler_with_resource_view *>(update.descriptors)[i];
-			if (descriptor.view == 0)
-				continue;
 
 			if (gl.VERSION_4_5)
 			{
 				gl.BindTextureUnit(first + i, descriptor.view.handle & 0xFFFFFFFF);
 			}
-			else
+			else if (descriptor.view != 0)
 			{
 				gl.ActiveTexture(GL_TEXTURE0 + first + i);
 				gl.BindTexture(descriptor.view.handle >> 40, descriptor.view.handle & 0xFFFFFFFF);
@@ -1131,14 +1137,12 @@ void reshade::opengl::device_context_impl::push_descriptors(api::shader_stage, a
 		for (uint32_t i = 0; i < update.count; ++i)
 		{
 			const auto &descriptor = static_cast<const api::resource_view *>(update.descriptors)[i];
-			if (descriptor == 0)
-				continue;
 
 			if (gl.VERSION_4_5)
 			{
 				gl.BindTextureUnit(first + i, descriptor.handle & 0xFFFFFFFF);
 			}
-			else
+			else if (descriptor != 0)
 			{
 				gl.ActiveTexture(GL_TEXTURE0 + first + i);
 				gl.BindTexture(descriptor.handle >> 40, descriptor.handle & 0xFFFFFFFF);
@@ -1329,7 +1333,7 @@ void reshade::opengl::device_context_impl::copy_resource(api::resource src, api:
 	}
 	else
 	{
-		for (uint32_t layer = 0; layer < desc.texture.depth_or_layers; ++layer)
+		for (uint32_t layer = 0; layer < (desc.type == api::resource_type::texture_3d ? 1u : static_cast<uint32_t>(desc.texture.depth_or_layers)); ++layer)
 		{
 			for (uint32_t level = 0; level < desc.texture.levels; ++level)
 			{
@@ -1350,38 +1354,17 @@ void reshade::opengl::device_context_impl::copy_buffer_region(api::resource src,
 	assert(src_offset <= static_cast<uint64_t>(std::numeric_limits<GLintptr>::max()) &&
 		   dst_offset <= static_cast<uint64_t>(std::numeric_limits<GLintptr>::max()) && (size == UINT64_MAX || size <= static_cast<uint64_t>(std::numeric_limits<GLsizeiptr>::max())));
 
+	if (UINT64_MAX == size)
+		size = _device->get_buffer_size(src_object) - src_offset;
+
 	if (gl.VERSION_4_5)
 	{
-		if (UINT64_MAX == size)
-		{
-#ifndef _WIN64
-			GLint max_size = 0;
-			gl.GetNamedBufferParameteriv(src_object, GL_BUFFER_SIZE, &max_size);
-#else
-			GLint64 max_size = 0;
-			gl.GetNamedBufferParameteri64v(src_object, GL_BUFFER_SIZE, &max_size);
-#endif
-			size = max_size;
-		}
-
 		gl.CopyNamedBufferSubData(src_object, dst_object, static_cast<GLintptr>(src_offset), static_cast<GLintptr>(dst_offset), static_cast<GLsizeiptr>(size));
 	}
 	else
 	{
 		gl.BindBuffer(GL_COPY_READ_BUFFER, src_object);
 		gl.BindBuffer(GL_COPY_WRITE_BUFFER, dst_object);
-
-		if (UINT64_MAX == size)
-		{
-#ifndef _WIN64
-			GLint max_size = 0;
-			gl.GetBufferParameteriv(GL_COPY_READ_BUFFER, GL_BUFFER_SIZE, &max_size);
-#else
-			GLint64 max_size = 0;
-			gl.GetBufferParameteri64v(GL_COPY_READ_BUFFER, GL_BUFFER_SIZE, &max_size);
-#endif
-			size = max_size;
-		}
 
 		gl.CopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, static_cast<GLintptr>(src_offset), static_cast<GLintptr>(dst_offset), static_cast<GLsizeiptr>(size));
 	}
@@ -1396,18 +1379,18 @@ void reshade::opengl::device_context_impl::copy_buffer_to_texture(api::resource 
 	GLint prev_unpack_swap = GL_FALSE;
 	GLint prev_unpack_alignment = 0;
 	GLint prev_unpack_row_length = 0;
-	GLint prev_unpack_image_height = 0;
-	GLint prev_unpack_skip_rows = 0;
+	GLint prev_unpack_slice_height = 0;
 	GLint prev_unpack_skip_pixels = 0;
-	GLint prev_unpack_skip_images = 0;
+	GLint prev_unpack_skip_rows = 0;
+	GLint prev_unpack_skip_slices = 0;
 	gl.GetIntegerv(GL_UNPACK_LSB_FIRST, &prev_unpack_lsb);
 	gl.GetIntegerv(GL_UNPACK_SWAP_BYTES, &prev_unpack_swap);
 	gl.GetIntegerv(GL_UNPACK_ALIGNMENT, &prev_unpack_alignment);
 	gl.GetIntegerv(GL_UNPACK_ROW_LENGTH, &prev_unpack_row_length);
-	gl.GetIntegerv(GL_UNPACK_IMAGE_HEIGHT, &prev_unpack_image_height);
-	gl.GetIntegerv(GL_UNPACK_SKIP_ROWS, &prev_unpack_skip_rows);
+	gl.GetIntegerv(GL_UNPACK_IMAGE_HEIGHT, &prev_unpack_slice_height);
 	gl.GetIntegerv(GL_UNPACK_SKIP_PIXELS, &prev_unpack_skip_pixels);
-	gl.GetIntegerv(GL_UNPACK_SKIP_IMAGES, &prev_unpack_skip_images);
+	gl.GetIntegerv(GL_UNPACK_SKIP_ROWS, &prev_unpack_skip_rows);
+	gl.GetIntegerv(GL_UNPACK_SKIP_IMAGES, &prev_unpack_skip_slices);
 
 	GLuint prev_unpack_binding = 0;
 	gl.GetIntegerv(GL_PIXEL_UNPACK_BUFFER_BINDING, reinterpret_cast<GLint *>(&prev_unpack_binding));
@@ -1421,8 +1404,8 @@ void reshade::opengl::device_context_impl::copy_buffer_to_texture(api::resource 
 	gl.PixelStorei(GL_UNPACK_ALIGNMENT, 1);
 	gl.PixelStorei(GL_UNPACK_ROW_LENGTH, row_length);
 	gl.PixelStorei(GL_UNPACK_IMAGE_HEIGHT, slice_height);
-	gl.PixelStorei(GL_UNPACK_SKIP_ROWS, 0);
 	gl.PixelStorei(GL_UNPACK_SKIP_PIXELS, 0);
+	gl.PixelStorei(GL_UNPACK_SKIP_ROWS, 0);
 	gl.PixelStorei(GL_UNPACK_SKIP_IMAGES, 0);
 
 	const api::resource_desc dst_desc = _device->get_resource_desc(dst);
@@ -1499,7 +1482,7 @@ void reshade::opengl::device_context_impl::copy_buffer_to_texture(api::resource 
 			gl.BindTexture(dst_target, dst_object);
 
 		const GLuint level = dst_subresource % dst_desc.texture.levels;
-		      GLuint layer = dst_subresource / dst_desc.texture.levels;
+		const GLuint layer = dst_subresource / dst_desc.texture.levels;
 
 		if (dst_box == nullptr)
 		{
@@ -1509,12 +1492,8 @@ void reshade::opengl::device_context_impl::copy_buffer_to_texture(api::resource 
 		}
 
 		GLenum level_target = dst_target;
-		if (depth == 1 && (dst_target == GL_TEXTURE_CUBE_MAP || dst_target == GL_TEXTURE_CUBE_MAP_ARRAY))
-		{
-			const GLuint face = layer % 6;
-			layer /= 6;
-			level_target = GL_TEXTURE_CUBE_MAP_POSITIVE_X + face;
-		}
+		if (depth == 1 && dst_target == GL_TEXTURE_CUBE_MAP)
+			level_target = GL_TEXTURE_CUBE_MAP_POSITIVE_X + (layer % 6);
 
 		const auto row_pitch = api::format_row_pitch(dst_desc.texture.format, row_length != 0 ? row_length : width);
 		const auto slice_pitch = api::format_slice_pitch(dst_desc.texture.format, row_pitch, slice_height != 0 ? slice_height : height);
@@ -1570,10 +1549,10 @@ void reshade::opengl::device_context_impl::copy_buffer_to_texture(api::resource 
 	gl.PixelStorei(GL_UNPACK_SWAP_BYTES, prev_unpack_swap);
 	gl.PixelStorei(GL_UNPACK_ALIGNMENT, prev_unpack_alignment);
 	gl.PixelStorei(GL_UNPACK_ROW_LENGTH, prev_unpack_row_length);
-	gl.PixelStorei(GL_UNPACK_IMAGE_HEIGHT, prev_unpack_image_height);
-	gl.PixelStorei(GL_UNPACK_SKIP_ROWS, prev_unpack_skip_rows);
+	gl.PixelStorei(GL_UNPACK_IMAGE_HEIGHT, prev_unpack_slice_height);
 	gl.PixelStorei(GL_UNPACK_SKIP_PIXELS, prev_unpack_skip_pixels);
-	gl.PixelStorei(GL_UNPACK_SKIP_IMAGES, prev_unpack_skip_images);
+	gl.PixelStorei(GL_UNPACK_SKIP_ROWS, prev_unpack_skip_rows);
+	gl.PixelStorei(GL_UNPACK_SKIP_IMAGES, prev_unpack_skip_slices);
 }
 void reshade::opengl::device_context_impl::copy_texture_region(api::resource src, uint32_t src_subresource, const api::subresource_box *src_box, api::resource dst, uint32_t dst_subresource, const api::subresource_box *dst_box, api::filter_mode filter)
 {
@@ -1630,7 +1609,7 @@ void reshade::opengl::device_context_impl::copy_texture_region(api::resource src
 
 		gl.CopyImageSubData(
 			src_object, src_target, src_subresource % src_desc.texture.levels, src_region[0], src_region[1], src_region[2] + (src_subresource / src_desc.texture.levels),
-			dst_object, dst_target, dst_subresource % dst_desc.texture.levels, dst_region[0], dst_region[1], dst_region[2] + (dst_subresource / src_desc.texture.levels),
+			dst_object, dst_target, dst_subresource % dst_desc.texture.levels, dst_region[0], dst_region[1], dst_region[2] + (dst_subresource / dst_desc.texture.levels),
 			src_region[3], src_region[4], src_region[5]);
 	}
 	else
@@ -1805,7 +1784,7 @@ void reshade::opengl::device_context_impl::copy_texture_to_buffer(api::resource 
 			gl.BindTexture(src_target, src_object);
 
 		const GLuint level = src_subresource % src_desc.texture.levels;
-		      GLuint layer = src_subresource / src_desc.texture.levels;
+		const GLuint layer = src_subresource / src_desc.texture.levels;
 
 		if (src_box == nullptr)
 		{
@@ -1814,28 +1793,32 @@ void reshade::opengl::device_context_impl::copy_texture_to_buffer(api::resource 
 			depth  = (src_desc.type == api::resource_type::texture_3d ? std::max(1u, depth >> level) : 1u);
 		}
 
-		GLenum level_target = src_target;
-		if (depth == 1 && (src_target == GL_TEXTURE_CUBE_MAP || src_target == GL_TEXTURE_CUBE_MAP_ARRAY))
-		{
-			const GLuint face = layer % 6;
-			layer /= 6;
-			level_target = GL_TEXTURE_CUBE_MAP_POSITIVE_X + face;
-		}
-
 		const auto row_pitch = api::format_row_pitch(src_desc.texture.format, row_length != 0 ? row_length : width);
 		const auto slice_pitch = api::format_slice_pitch(src_desc.texture.format, row_pitch, slice_height != 0 ? slice_height : height);
 		const auto total_image_size = depth * static_cast<size_t>(slice_pitch);
 
 		assert(total_image_size <= static_cast<size_t>(std::numeric_limits<GLsizei>::max()));
 
-		if (src_box == nullptr)
-		{
-			assert(layer == 0);
+		// 'glGetTexImage' always downloads all layers of array textures, so a single layer (or any sub-region) can only be downloaded via 'glGetTextureSubImage'
+		const bool is_array_target = (src_target == GL_TEXTURE_1D_ARRAY || src_target == GL_TEXTURE_2D_ARRAY || src_target == GL_TEXTURE_CUBE_MAP_ARRAY);
 
-			gl.GetTexImage(level_target, level, format, type, reinterpret_cast<void *>(static_cast<uintptr_t>(dst_offset)));
+		if (src_box == nullptr && !is_array_target)
+		{
+			// Cube map faces have to be downloaded individually via their face target
+			GLenum level_target = src_target;
+			if (src_target == GL_TEXTURE_CUBE_MAP)
+				level_target = GL_TEXTURE_CUBE_MAP_POSITIVE_X + (layer % 6);
+			else
+				assert(layer == 0);
+
+			if (type != GL_COMPRESSED_TEXTURE_FORMATS)
+				gl.GetTexImage(level_target, level, format, type, reinterpret_cast<void *>(static_cast<uintptr_t>(dst_offset)));
+			else
+				gl.GetCompressedTexImage(level_target, level, reinterpret_cast<void *>(static_cast<uintptr_t>(dst_offset)));
 		}
 		else if (gl.VERSION_4_5)
 		{
+			// 'glGetTextureSubImage' addresses array layers (and cube map faces) via the y or z offset
 			switch (src_target)
 			{
 			case GL_TEXTURE_1D_ARRAY:
@@ -1848,7 +1831,10 @@ void reshade::opengl::device_context_impl::copy_texture_to_buffer(api::resource 
 				break;
 			}
 
-			gl.GetTextureSubImage(src_object, level, xoffset, yoffset, zoffset, width, height, depth, format, type, static_cast<GLsizei>(total_image_size), reinterpret_cast<void *>(static_cast<uintptr_t>(dst_offset)));
+			if (type != GL_COMPRESSED_TEXTURE_FORMATS)
+				gl.GetTextureSubImage(src_object, level, xoffset, yoffset, zoffset, width, height, depth, format, type, static_cast<GLsizei>(total_image_size), reinterpret_cast<void *>(static_cast<uintptr_t>(dst_offset)));
+			else
+				gl.GetCompressedTextureSubImage(src_object, level, xoffset, yoffset, zoffset, width, height, depth, static_cast<GLsizei>(total_image_size), reinterpret_cast<void *>(static_cast<uintptr_t>(dst_offset)));
 		}
 
 		if (src_object != prev_binding)
@@ -2005,28 +1991,32 @@ void reshade::opengl::device_context_impl::generate_mipmaps(api::resource_view s
 		{
 			GLuint levels = 0;
 			gl.GetTexParameteriv(target, GL_TEXTURE_IMMUTABLE_LEVELS, reinterpret_cast<GLint *>(&levels));
-			GLuint base_level_width = 0;
-			gl.GetTexLevelParameteriv(target, 0, GL_TEXTURE_WIDTH, reinterpret_cast<GLint *>(&base_level_width));
-			GLuint base_level_height = 0;
-			gl.GetTexLevelParameteriv(target, 0, GL_TEXTURE_HEIGHT, reinterpret_cast<GLint *>(&base_level_height));
-
-			// Use custom mipmap generation implementation because 'glGenerateMipmap' generates shifted results
-			gl.UseProgram(_device->_mipmap_program);
-
-			for (GLuint level = 1; level < levels; ++level)
+			// This is zero for textures with mutable storage
+			if (levels != 0)
 			{
-				const GLuint width = std::max(1u, base_level_width >> level);
-				const GLuint height = std::max(1u, base_level_height >> level);
+				GLuint base_level_width = 0;
+				gl.GetTexLevelParameteriv(target, 0, GL_TEXTURE_WIDTH, reinterpret_cast<GLint *>(&base_level_width));
+				GLuint base_level_height = 0;
+				gl.GetTexLevelParameteriv(target, 0, GL_TEXTURE_HEIGHT, reinterpret_cast<GLint *>(&base_level_height));
 
-				gl.Uniform1i(0 /* src_level */, static_cast<GLint>(level - 1));
-				gl.BindImageTexture(1 /* dest */, object, level, GL_FALSE, 0, GL_WRITE_ONLY, internal_format);
+				// Use custom mipmap generation implementation because 'glGenerateMipmap' generates shifted results
+				gl.UseProgram(_device->_mipmap_program);
 
-				gl.DispatchCompute((width + 7) / 8, (height + 7) / 8, 1);
+				for (GLuint level = 1; level < levels; ++level)
+				{
+					const GLuint width = std::max(1u, base_level_width >> level);
+					const GLuint height = std::max(1u, base_level_height >> level);
 
-				// Ensure next iteration reads the data written by this iteration
-				gl.MemoryBarrier(GL_TEXTURE_FETCH_BARRIER_BIT);
+					gl.Uniform1i(0 /* src_level */, static_cast<GLint>(level - 1));
+					gl.BindImageTexture(1 /* dest */, object, level, GL_FALSE, 0, GL_WRITE_ONLY, internal_format);
+
+					gl.DispatchCompute((width + 7) / 8, (height + 7) / 8, 1);
+
+					// Ensure next iteration reads the data written by this iteration
+					gl.MemoryBarrier(GL_TEXTURE_FETCH_BARRIER_BIT);
+				}
+				return;
 			}
-			return;
 		}
 	}
 

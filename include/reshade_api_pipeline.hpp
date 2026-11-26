@@ -607,6 +607,7 @@ namespace reshade::api
 		/// Stride of the entire vertex (this has to be consistent for all elements per vertex buffer binding).
 		/// Set to zero in case this is unknown.
 		/// </summary>
+		/// <seealso cref="dynamic_state::input_element_stride"/>
 		uint32_t stride = 0;
 		/// <summary>
 		/// Number of instances to draw using the same per-instance data before advancing by one element.
@@ -1227,7 +1228,7 @@ namespace reshade::api
 		occlusion = 0,
 		/// <summary>
 		/// Zero if no samples passed, one if at least one sample passed the depth and stencil tests between beginning and end of the query.
-		/// Data is a 64-bit unsigned integer value.
+		/// Data is a 32-bit unsigned integer value.
 		/// </summary>
 		binary_occlusion = 1,
 		/// <summary>
@@ -1303,6 +1304,7 @@ namespace reshade::api
 		alpha_func = 25,
 		srgb_write_enable = 194,
 		primitive_topology = 1000,
+		input_element_stride = 1009,
 		sample_mask = 162,
 
 		// Blend state

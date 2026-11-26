@@ -77,7 +77,8 @@ bool modify_swapchain_desc(reshade::api::device_api api, DXGI_SWAP_CHAIN_DESC &i
 		internal_desc.BufferDesc.Height = desc.back_buffer.texture.height;
 		internal_desc.BufferDesc.RefreshRate = floating_point_to_rational(desc.fullscreen_refresh_rate);
 		internal_desc.BufferDesc.Format = static_cast<DXGI_FORMAT>(desc.back_buffer.texture.format);
-		internal_desc.SampleDesc.Count = desc.back_buffer.texture.samples;
+		if (desc.back_buffer.texture.samples != internal_desc.SampleDesc.Count)
+			internal_desc.SampleDesc = { desc.back_buffer.texture.samples, 0 };
 
 		if ((desc.back_buffer.usage & reshade::api::resource_usage::shader_resource) != 0)
 			internal_desc.BufferUsage |= DXGI_USAGE_SHADER_INPUT;
@@ -159,7 +160,8 @@ bool modify_swapchain_desc(reshade::api::device_api api, DXGI_SWAP_CHAIN_DESC1 &
 		internal_desc.Height = desc.back_buffer.texture.height;
 		internal_desc.Format = static_cast<DXGI_FORMAT>(desc.back_buffer.texture.format);
 		internal_desc.Stereo = desc.back_buffer.texture.depth_or_layers > 1;
-		internal_desc.SampleDesc.Count = desc.back_buffer.texture.samples;
+		if (desc.back_buffer.texture.samples != internal_desc.SampleDesc.Count)
+			internal_desc.SampleDesc = { desc.back_buffer.texture.samples, 0 };
 
 		if ((desc.back_buffer.usage & reshade::api::resource_usage::shader_resource) != 0)
 			internal_desc.BufferUsage |= DXGI_USAGE_SHADER_INPUT;
@@ -387,6 +389,7 @@ static void init_swapchain_proxy(IDXGIFactory *factory, reshade::api::device_api
 #if RESHADE_ADDON
 		swapchain_proxy->_sync_interval = sync_interval;
 		swapchain_proxy->_orig_desc = orig_desc;
+		swapchain_proxy->_orig_desc.Windowed = -1;
 		swapchain_proxy->_is_desc_modified = desc_modified;
 #endif
 
@@ -454,7 +457,7 @@ HRESULT STDMETHODCALLTYPE IDXGIFactory2_CreateSwapChainForHwnd_Impl(IDXGIFactory
 {
 	reshade::log::message(
 		reshade::log::level::info,
-		"Redirecting IDXGIFactory2::CreateSwapChainForHwnd(this = %p, pDevice = %p, hWnd = %p, pDesc = %p, pFullscreenDesc = %p, pRestrictToOutput = %p, ppSwapChain = ) ...",
+		"Redirecting IDXGIFactory2::CreateSwapChainForHwnd(this = %p, pDevice = %p, hWnd = %p, pDesc = %p, pFullscreenDesc = %p, pRestrictToOutput = %p, ppSwapChain = %p) ...",
 		pFactory, pDevice, hWnd, pDesc, pFullscreenDesc, pRestrictToOutput, ppSwapChain);
 
 	if (pDevice == nullptr || pDesc == nullptr || ppSwapChain == nullptr)
@@ -465,7 +468,7 @@ HRESULT STDMETHODCALLTYPE IDXGIFactory2_CreateSwapChainForHwnd_Impl(IDXGIFactory
 
 	DXGI_SWAP_CHAIN_DESC1 desc = *pDesc;
 	UINT sync_interval = UINT_MAX;
-	DXGI_SWAP_CHAIN_FULLSCREEN_DESC fullscreen_desc = {};
+	DXGI_SWAP_CHAIN_FULLSCREEN_DESC fullscreen_desc = { DXGI_RATIONAL { 0, 1 } };
 	if (pFullscreenDesc != nullptr)
 		fullscreen_desc = *pFullscreenDesc;
 	else
@@ -477,7 +480,7 @@ HRESULT STDMETHODCALLTYPE IDXGIFactory2_CreateSwapChainForHwnd_Impl(IDXGIFactory
 		desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
 
 	g_in_dxgi_runtime = true;
-	const HRESULT hr = trampoline(pFactory, pDevice, hWnd, &desc, fullscreen_desc.Windowed ? nullptr : &fullscreen_desc, pRestrictToOutput, ppSwapChain);
+	const HRESULT hr = trampoline(pFactory, pDevice, hWnd, &desc, &fullscreen_desc, pRestrictToOutput, ppSwapChain);
 	g_in_dxgi_runtime = false;
 	if (FAILED(hr))
 	{
@@ -487,7 +490,7 @@ HRESULT STDMETHODCALLTYPE IDXGIFactory2_CreateSwapChainForHwnd_Impl(IDXGIFactory
 
 	init_swapchain_proxy(pFactory, direct3d_version, device_proxy, *ppSwapChain, desc.BufferUsage, sync_interval,
 		DXGI_SWAP_CHAIN_DESC {
-			{ pDesc->Width, pDesc->Height, pFullscreenDesc != nullptr ? pFullscreenDesc->RefreshRate : DXGI_RATIONAL {}, pDesc->Format, DXGI_MODE_SCANLINE_ORDER_UNSPECIFIED, pDesc->Scaling == DXGI_SCALING_ASPECT_RATIO_STRETCH ? DXGI_MODE_SCALING_CENTERED : DXGI_MODE_SCALING_STRETCHED },
+			{ pDesc->Width, pDesc->Height, pFullscreenDesc != nullptr ? pFullscreenDesc->RefreshRate : DXGI_RATIONAL { 0, 1 }, pDesc->Format },
 			pDesc->SampleDesc,
 			pDesc->BufferUsage,
 			pDesc->BufferCount,
@@ -513,7 +516,7 @@ HRESULT STDMETHODCALLTYPE IDXGIFactory2_CreateSwapChainForCoreWindow_Impl(IDXGIF
 {
 	reshade::log::message(
 		reshade::log::level::info,
-		"Redirecting IDXGIFactory2::CreateSwapChainForCoreWindow(this = %p, pDevice = %p, pWindow = %p, pDesc = %p, pRestrictToOutput = %p, ppSwapChain = ) ...",
+		"Redirecting IDXGIFactory2::CreateSwapChainForCoreWindow(this = %p, pDevice = %p, pWindow = %p, pDesc = %p, pRestrictToOutput = %p, ppSwapChain = %p) ...",
 		pFactory, pDevice, pWindow, pDesc, pRestrictToOutput, ppSwapChain);
 
 	if (pDevice == nullptr || pDesc == nullptr || ppSwapChain == nullptr)
@@ -538,7 +541,7 @@ HRESULT STDMETHODCALLTYPE IDXGIFactory2_CreateSwapChainForCoreWindow_Impl(IDXGIF
 
 	init_swapchain_proxy(pFactory, direct3d_version, device_proxy, *ppSwapChain, desc.BufferUsage, sync_interval,
 		DXGI_SWAP_CHAIN_DESC {
-			{ pDesc->Width, pDesc->Height, DXGI_RATIONAL {}, pDesc->Format, DXGI_MODE_SCANLINE_ORDER_UNSPECIFIED, pDesc->Scaling == DXGI_SCALING_ASPECT_RATIO_STRETCH ? DXGI_MODE_SCALING_CENTERED : DXGI_MODE_SCALING_STRETCHED },
+			{ pDesc->Width, pDesc->Height, DXGI_RATIONAL { 0, 1 }, pDesc->Format },
 			pDesc->SampleDesc,
 			pDesc->BufferUsage,
 			pDesc->BufferCount,
@@ -564,7 +567,7 @@ HRESULT STDMETHODCALLTYPE IDXGIFactory2_CreateSwapChainForComposition_Impl(IDXGI
 {
 	reshade::log::message(
 		reshade::log::level::info,
-		"Redirecting IDXGIFactory2::CreateSwapChainForComposition(this = %p, pDevice = %p, pDesc = %p, pRestrictToOutput = %p, ppSwapChain = ) ...",
+		"Redirecting IDXGIFactory2::CreateSwapChainForComposition(this = %p, pDevice = %p, pDesc = %p, pRestrictToOutput = %p, ppSwapChain = %p) ...",
 		pFactory, pDevice, pDesc, pRestrictToOutput, ppSwapChain);
 
 	if (pDevice == nullptr || pDesc == nullptr || ppSwapChain == nullptr)
@@ -640,11 +643,16 @@ extern "C" HRESULT WINAPI CreateDXGIFactory1(REFIID riid, void **ppFactory)
 	}
 
 	// The returned factory should alway implement the 'IDXGIFactory' base interface
-	const auto factory = static_cast<IDXGIFactory *>(*ppFactory);
+	com_ptr<IDXGIFactory> factory;
+	if (FAILED(static_cast<IUnknown *>(*ppFactory)->QueryInterface(&factory)))
+	{
+		reshade::log::message(reshade::log::level::warning, "Unknown interface %s in CreateDXGIFactory1.", reshade::log::iid_to_string(riid).c_str());
+		return hr;
+	}
 
 	if (use_dxgi_factory_vtable_hooks())
 	{
-		reshade::hooks::install("IDXGIFactory::CreateSwapChain", reshade::hooks::vtable_from_instance(factory), 10, &IDXGIFactory_CreateSwapChain);
+		reshade::hooks::install("IDXGIFactory::CreateSwapChain", reshade::hooks::vtable_from_instance(factory.get()), 10, &IDXGIFactory_CreateSwapChain);
 
 		// Check for DXGI 1.2 support and install 'IDXGIFactory2' hooks if it exists
 		if (com_ptr<IDXGIFactory2> factory2;
@@ -657,7 +665,7 @@ extern "C" HRESULT WINAPI CreateDXGIFactory1(REFIID riid, void **ppFactory)
 	}
 	else if (!g_in_dxgi_runtime)
 	{
-		const auto factory_proxy = new DXGIFactory(factory);
+		const auto factory_proxy = new DXGIFactory(factory.get());
 
 		// Upgrade to the actual interface version requested here
 		if (factory_proxy->check_and_upgrade_interface(riid))
@@ -681,7 +689,7 @@ extern "C" HRESULT WINAPI CreateDXGIFactory1(REFIID riid, void **ppFactory)
 	}
 
 #if RESHADE_VERBOSE_LOG
-	reshade::log::message(reshade::log::level::debug, "Returning IDXGIFactory object %p.", factory);
+	reshade::log::message(reshade::log::level::debug, "Returning IDXGIFactory object %p.", factory.get());
 #endif
 
 	return hr;
@@ -737,21 +745,26 @@ extern "C" HRESULT WINAPI CreateDXGIFactory2(UINT Flags, REFIID riid, void **ppF
 	}
 
 	// The returned factory should alway implement the 'IDXGIFactory2' interface
-	const auto factory = static_cast<IDXGIFactory2 *>(*ppFactory);
+	com_ptr<IDXGIFactory2> factory;
+	if (FAILED(static_cast<IUnknown *>(*ppFactory)->QueryInterface(&factory)))
+	{
+		reshade::log::message(reshade::log::level::warning, "Unknown interface %s in CreateDXGIFactory2.", reshade::log::iid_to_string(riid).c_str());
+		return hr;
+	}
 
 	if (use_dxgi_factory_vtable_hooks())
 	{
-		reshade::hooks::install("IDXGIFactory::CreateSwapChain", reshade::hooks::vtable_from_instance(factory), 10, &IDXGIFactory_CreateSwapChain);
+		reshade::hooks::install("IDXGIFactory::CreateSwapChain", reshade::hooks::vtable_from_instance(factory.get()), 10, &IDXGIFactory_CreateSwapChain);
 
 		{
-			reshade::hooks::install("IDXGIFactory2::CreateSwapChainForHwnd", reshade::hooks::vtable_from_instance(factory), 15, &IDXGIFactory2_CreateSwapChainForHwnd);
-			reshade::hooks::install("IDXGIFactory2::CreateSwapChainForCoreWindow", reshade::hooks::vtable_from_instance(factory), 16, &IDXGIFactory2_CreateSwapChainForCoreWindow);
-			reshade::hooks::install("IDXGIFactory2::CreateSwapChainForComposition", reshade::hooks::vtable_from_instance(factory), 24, &IDXGIFactory2_CreateSwapChainForComposition);
+			reshade::hooks::install("IDXGIFactory2::CreateSwapChainForHwnd", reshade::hooks::vtable_from_instance(factory.get()), 15, &IDXGIFactory2_CreateSwapChainForHwnd);
+			reshade::hooks::install("IDXGIFactory2::CreateSwapChainForCoreWindow", reshade::hooks::vtable_from_instance(factory.get()), 16, &IDXGIFactory2_CreateSwapChainForCoreWindow);
+			reshade::hooks::install("IDXGIFactory2::CreateSwapChainForComposition", reshade::hooks::vtable_from_instance(factory.get()), 24, &IDXGIFactory2_CreateSwapChainForComposition);
 		}
 	}
 	else if (!g_in_dxgi_runtime)
 	{
-		const auto factory_proxy = new DXGIFactory(factory);
+		const auto factory_proxy = new DXGIFactory(factory.get());
 
 		// Upgrade to the actual interface version requested here
 		if (factory_proxy->check_and_upgrade_interface(riid))
@@ -775,7 +788,7 @@ extern "C" HRESULT WINAPI CreateDXGIFactory2(UINT Flags, REFIID riid, void **ppF
 	}
 
 #if RESHADE_VERBOSE_LOG
-	reshade::log::message(reshade::log::level::debug, "Returning IDXGIFactory object %p.", factory);
+	reshade::log::message(reshade::log::level::debug, "Returning IDXGIFactory object %p.", factory.get());
 #endif
 
 	return hr;

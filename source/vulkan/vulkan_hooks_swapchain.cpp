@@ -27,6 +27,166 @@ extern void destroy_default_view(reshade::vulkan::device_impl *device_impl, VkIm
 #endif
 
 #if VK_KHR_swapchain
+static std::string format_to_string(VkFormat format)
+{
+	switch (format)
+	{
+	case VK_FORMAT_UNDEFINED:
+		return "VK_FORMAT_UNDEFINED";
+	case VK_FORMAT_R8G8B8A8_UNORM:
+		return "VK_FORMAT_R8G8B8A8_UNORM";
+	case VK_FORMAT_R8G8B8A8_SRGB:
+		return "VK_FORMAT_R8G8B8A8_SRGB";
+	case VK_FORMAT_B8G8R8A8_UNORM:
+		return "VK_FORMAT_B8G8R8A8_UNORM";
+	case VK_FORMAT_B8G8R8A8_SRGB:
+		return "VK_FORMAT_B8G8R8A8_SRGB";
+	case VK_FORMAT_A2B10G10R10_UNORM_PACK32:
+		return "VK_FORMAT_A2B10G10R10_UNORM_PACK32";
+	case VK_FORMAT_A2R10G10B10_UNORM_PACK32:
+		return "VK_FORMAT_A2R10G10B10_UNORM_PACK32";
+	case VK_FORMAT_R16G16B16A16_UNORM:
+		return "VK_FORMAT_R16G16B16A16_UNORM";
+	case VK_FORMAT_R16G16B16A16_SFLOAT:
+		return "VK_FORMAT_R16G16B16A16_SFLOAT";
+	default:
+		char temp_string[11];
+		return std::string(temp_string, std::snprintf(temp_string, std::size(temp_string), "%u", static_cast<unsigned int>(format)));
+	}
+}
+static std::string color_space_to_string(VkColorSpaceKHR color_space)
+{
+	switch (color_space)
+	{
+	case VK_COLOR_SPACE_SRGB_NONLINEAR_KHR:
+		return "VK_COLOR_SPACE_SRGB_NONLINEAR_KHR";
+#if VK_EXT_swapchain_colorspace
+	case VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT:
+		return "VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT";
+	case VK_COLOR_SPACE_BT2020_LINEAR_EXT:
+		return "VK_COLOR_SPACE_BT2020_LINEAR_EXT";
+	case VK_COLOR_SPACE_HDR10_ST2084_EXT:
+		return "VK_COLOR_SPACE_HDR10_ST2084_EXT";
+	case VK_COLOR_SPACE_HDR10_HLG_EXT:
+		return "VK_COLOR_SPACE_HDR10_HLG_EXT";
+#endif
+	default:
+		char temp_string[11];
+		return std::string(temp_string, std::snprintf(temp_string, std::size(temp_string), "%u", static_cast<unsigned int>(color_space)));
+	}
+}
+
+static void dump_and_modify_swapchain_desc(VkSwapchainCreateInfoKHR &create_info,
+#if VK_EXT_full_screen_exclusive
+	VkSurfaceFullScreenExclusiveInfoEXT &fullscreen_info,
+#endif
+	HWND window)
+{
+	reshade::log::message(reshade::log::level::info, "> Dumping swap chain description:");
+	reshade::log::message(reshade::log::level::info, "  +-----------------------------------------+-----------------------------------------+");
+	reshade::log::message(reshade::log::level::info, "  | Parameter                               | Value                                   |");
+	reshade::log::message(reshade::log::level::info, "  +-----------------------------------------+-----------------------------------------+");
+	reshade::log::message(reshade::log::level::info, "  | flags                                   |"                               " %-#39x |", static_cast<unsigned int>(create_info.flags));
+	reshade::log::message(reshade::log::level::info, "  | surface                                 |"                                " %-39p |", create_info.surface);
+	reshade::log::message(reshade::log::level::info, "  | minImageCount                           |"                                " %-39u |", create_info.minImageCount);
+	reshade::log::message(reshade::log::level::info, "  | imageFormat                             |"                                " %-39s |", format_to_string(create_info.imageFormat).c_str());
+	reshade::log::message(reshade::log::level::info, "  | imageColorSpace                         |"                                " %-39s |", color_space_to_string(create_info.imageColorSpace).c_str());
+	reshade::log::message(reshade::log::level::info, "  | imageExtent                             |"            " %-19u"            " %-19u |", create_info.imageExtent.width, create_info.imageExtent.height);
+	reshade::log::message(reshade::log::level::info, "  | imageArrayLayers                        |"                                " %-39u |", create_info.imageArrayLayers);
+	reshade::log::message(reshade::log::level::info, "  | imageUsage                              |"                               " %-#39x |", static_cast<unsigned int>(create_info.imageUsage));
+	reshade::log::message(reshade::log::level::info, "  | imageSharingMode                        |"                                " %-39d |", static_cast<int>(create_info.imageSharingMode));
+	reshade::log::message(reshade::log::level::info, "  | queueFamilyIndexCount                   |"                                " %-39u |", create_info.queueFamilyIndexCount);
+	reshade::log::message(reshade::log::level::info, "  | preTransform                            |"                               " %-#39x |", static_cast<unsigned int>(create_info.preTransform));
+	reshade::log::message(reshade::log::level::info, "  | compositeAlpha                          |"                               " %-#39x |", static_cast<unsigned int>(create_info.compositeAlpha));
+	reshade::log::message(reshade::log::level::info, "  | presentMode                             |"                                " %-39d |", static_cast<int>(create_info.presentMode));
+	reshade::log::message(reshade::log::level::info, "  | clipped                                 |"                                " %-39s |", create_info.clipped ? "true" : "false");
+	reshade::log::message(reshade::log::level::info, "  | oldSwapchain                            |"                                " %-39p |", create_info.oldSwapchain);
+	reshade::log::message(reshade::log::level::info, "  +-----------------------------------------+-----------------------------------------+");
+
+#if RESHADE_ADDON
+	reshade::api::swapchain_desc desc = {};
+	desc.back_buffer.type = reshade::api::resource_type::texture_2d;
+	desc.back_buffer.texture.width = create_info.imageExtent.width;
+	desc.back_buffer.texture.height = create_info.imageExtent.height;
+	assert(create_info.imageArrayLayers <= std::numeric_limits<uint16_t>::max());
+	desc.back_buffer.texture.depth_or_layers = static_cast<uint16_t>(create_info.imageArrayLayers);
+	desc.back_buffer.texture.levels = 1;
+	desc.back_buffer.texture.format = reshade::vulkan::convert_format(create_info.imageFormat);
+	desc.back_buffer.texture.samples = 1;
+	desc.back_buffer.heap = reshade::api::memory_heap::default_;
+	reshade::vulkan::convert_image_usage_flags_to_usage(create_info.imageUsage, desc.back_buffer.usage);
+
+	desc.back_buffer_count = create_info.minImageCount;
+	desc.present_mode = static_cast<uint32_t>(create_info.presentMode);
+	desc.present_flags = create_info.flags;
+	desc.color_space = reshade::vulkan::convert_color_space(create_info.imageColorSpace);
+
+#if VK_EXT_full_screen_exclusive
+	// Optionally change fullscreen state
+	const auto existing_fullscreen_info = find_in_structure_chain<VkSurfaceFullScreenExclusiveInfoEXT>(
+			create_info.pNext, VK_STRUCTURE_TYPE_SURFACE_FULL_SCREEN_EXCLUSIVE_INFO_EXT);
+	if (existing_fullscreen_info)
+	{
+		fullscreen_info = *existing_fullscreen_info;
+
+		desc.fullscreen_state = existing_fullscreen_info->fullScreenExclusive == VK_FULL_SCREEN_EXCLUSIVE_ALLOWED_EXT;
+	}
+	else
+	{
+		fullscreen_info = { VK_STRUCTURE_TYPE_SURFACE_FULL_SCREEN_EXCLUSIVE_INFO_EXT, const_cast<void *>(create_info.pNext) };
+		fullscreen_info.fullScreenExclusive = VK_FULL_SCREEN_EXCLUSIVE_DEFAULT_EXT;
+	}
+#endif
+
+	if (reshade::invoke_addon_event<reshade::addon_event::create_swapchain>(reshade::api::device_api::vulkan, desc, window))
+	{
+		create_info.imageFormat = reshade::vulkan::convert_format(desc.back_buffer.texture.format);
+		if (desc.color_space != reshade::api::color_space::unknown)
+			create_info.imageColorSpace = reshade::vulkan::convert_color_space(desc.color_space);
+		create_info.imageExtent.width = desc.back_buffer.texture.width;
+		create_info.imageExtent.height = desc.back_buffer.texture.height;
+		create_info.imageArrayLayers = desc.back_buffer.texture.depth_or_layers;
+		reshade::vulkan::convert_usage_to_image_usage_flags(desc.back_buffer.usage, create_info.imageUsage);
+
+		create_info.minImageCount = desc.back_buffer_count;
+		create_info.presentMode = static_cast<VkPresentModeKHR>(desc.present_mode);
+		create_info.flags = static_cast<uint32_t>(desc.present_flags);
+
+#if VK_EXT_full_screen_exclusive
+		if (desc.fullscreen_state)
+		{
+			if (fullscreen_info.fullScreenExclusive != VK_FULL_SCREEN_EXCLUSIVE_APPLICATION_CONTROLLED_EXT)
+			{
+				fullscreen_info.fullScreenExclusive = VK_FULL_SCREEN_EXCLUSIVE_ALLOWED_EXT;
+
+				if (existing_fullscreen_info != nullptr)
+					const_cast<VkSurfaceFullScreenExclusiveInfoEXT *>(existing_fullscreen_info)->fullScreenExclusive = fullscreen_info.fullScreenExclusive;
+				else
+					create_info.pNext = &fullscreen_info;
+			}
+		}
+		else
+		{
+			if (fullscreen_info.fullScreenExclusive == VK_FULL_SCREEN_EXCLUSIVE_ALLOWED_EXT)
+			{
+				fullscreen_info.fullScreenExclusive = VK_FULL_SCREEN_EXCLUSIVE_APPLICATION_CONTROLLED_EXT;
+
+				if (existing_fullscreen_info != nullptr)
+					const_cast<VkSurfaceFullScreenExclusiveInfoEXT *>(existing_fullscreen_info)->fullScreenExclusive = fullscreen_info.fullScreenExclusive;
+				else
+					create_info.pNext = &fullscreen_info;
+			}
+		}
+#endif
+
+		if (desc.sync_interval == 0)
+			create_info.presentMode = VK_PRESENT_MODE_IMMEDIATE_KHR;
+		else if (desc.sync_interval != UINT32_MAX)
+			create_info.presentMode = VK_PRESENT_MODE_FIFO_KHR;
+	}
+#endif
+}
+
 VkResult VKAPI_CALL vkCreateSwapchainKHR(VkDevice device, const VkSwapchainCreateInfoKHR *pCreateInfo, const VkAllocationCallbacks *pAllocator, VkSwapchainKHR *pSwapchain)
 {
 	reshade::log::message(reshade::log::level::info, "Redirecting vkCreateSwapchainKHR(device = %p, pCreateInfo = %p, pAllocator = %p, pSwapchain = %p) ...", device, pCreateInfo, pAllocator, pSwapchain);
@@ -38,8 +198,18 @@ VkResult VKAPI_CALL vkCreateSwapchainKHR(VkDevice device, const VkSwapchainCreat
 
 	VkSwapchainCreateInfoKHR create_info = *pCreateInfo;
 
+	// Look up window handle from surface
+	HWND const hwnd = g_vulkan_surfaces.at(create_info.surface);
+
+#if VK_EXT_full_screen_exclusive
+	VkSurfaceFullScreenExclusiveInfoEXT fullscreen_info;
+	dump_and_modify_swapchain_desc(create_info, fullscreen_info, hwnd);
+#else
+	dump_and_modify_swapchain_desc(create_info, hwnd);
+#endif
+
 	std::vector<VkFormat> format_list;
-	VkImageFormatListCreateInfo format_list_info;
+	VkImageFormatListCreateInfo format_list_info { VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO, create_info.pNext };
 	std::vector<uint32_t> queue_family_list;
 
 	// Only have to enable additional features if there is a graphics queue, since ReShade will not run otherwise
@@ -54,27 +224,27 @@ VkResult VKAPI_CALL vkCreateSwapchainKHR(VkDevice device, const VkSwapchainCreat
 		format_list.push_back(reshade::vulkan::convert_format(reshade::api::format_to_default_typed(reshade::vulkan::convert_format(create_info.imageFormat), 1)));
 
 		// Only have to make format mutable if they are actually different
-		if (format_list[0] != format_list[1])
+		const bool mutable_format = format_list[0] != format_list[1];
+		if (mutable_format)
 			create_info.flags |= VK_SWAPCHAIN_CREATE_MUTABLE_FORMAT_BIT_KHR;
 
 		// Patch the format list in the create info of the application
 		if (const auto existing_format_list_info = find_in_structure_chain<VkImageFormatListCreateInfo>(
 				pCreateInfo->pNext, VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO))
 		{
-			format_list.insert(format_list.end(), existing_format_list_info->pViewFormats, existing_format_list_info->pViewFormats + existing_format_list_info->viewFormatCount);
+			// Formats from the application may not be compatible if an add-on changed the format
+			if (create_info.imageFormat == pCreateInfo->imageFormat)
+				format_list.insert(format_list.end(), existing_format_list_info->pViewFormats, existing_format_list_info->pViewFormats + existing_format_list_info->viewFormatCount);
 
 			// Remove duplicates from the list (since the new formats may have already been added by the application)
 			std::sort(format_list.begin(), format_list.end());
 			format_list.erase(std::unique(format_list.begin(), format_list.end()), format_list.end());
 
-			// This is evil, because writing into application memory, but eh =)
 			const_cast<VkImageFormatListCreateInfo *>(existing_format_list_info)->viewFormatCount = static_cast<uint32_t>(format_list.size());
 			const_cast<VkImageFormatListCreateInfo *>(existing_format_list_info)->pViewFormats = format_list.data();
 		}
-		else if (format_list[0] != format_list[1])
+		else if (mutable_format)
 		{
-			format_list_info = { VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO };
-			format_list_info.pNext = create_info.pNext;
 			format_list_info.viewFormatCount = static_cast<uint32_t>(format_list.size());
 			format_list_info.pViewFormats = format_list.data();
 
@@ -97,176 +267,18 @@ VkResult VKAPI_CALL vkCreateSwapchainKHR(VkDevice device, const VkSwapchainCreat
 		}
 	}
 
-	// Dump swap chain description
+	// Ensure all swap chain images have their memory bound immediately, since default views are created for them below
+	create_info.flags &= ~VK_SWAPCHAIN_CREATE_DEFERRED_MEMORY_ALLOCATION_BIT_KHR;
+
+	assert(!g_in_dxgi_runtime);
+	g_in_dxgi_runtime = true;
+	const VkResult result = trampoline(device, &create_info, pAllocator, pSwapchain);
+	g_in_dxgi_runtime = false;
+	if (result < VK_SUCCESS)
 	{
-		const char *format_string = nullptr;
-		switch (create_info.imageFormat)
-		{
-		case VK_FORMAT_UNDEFINED:
-			format_string = "VK_FORMAT_UNDEFINED";
-			break;
-		case VK_FORMAT_R8G8B8A8_UNORM:
-			format_string = "VK_FORMAT_R8G8B8A8_UNORM";
-			break;
-		case VK_FORMAT_R8G8B8A8_SRGB:
-			format_string = "VK_FORMAT_R8G8B8A8_SRGB";
-			break;
-		case VK_FORMAT_B8G8R8A8_UNORM:
-			format_string = "VK_FORMAT_B8G8R8A8_UNORM";
-			break;
-		case VK_FORMAT_B8G8R8A8_SRGB:
-			format_string = "VK_FORMAT_B8G8R8A8_SRGB";
-			break;
-		case VK_FORMAT_A2B10G10R10_UNORM_PACK32:
-			format_string = "VK_FORMAT_A2B10G10R10_UNORM_PACK32";
-			break;
-		case VK_FORMAT_A2R10G10B10_UNORM_PACK32:
-			format_string = "VK_FORMAT_A2R10G10B10_UNORM_PACK32";
-			break;
-		case VK_FORMAT_R16G16B16A16_UNORM:
-			format_string = "VK_FORMAT_R16G16B16A16_UNORM";
-			break;
-		case VK_FORMAT_R16G16B16A16_SFLOAT:
-			format_string = "VK_FORMAT_R16G16B16A16_SFLOAT";
-			break;
-		}
-
-		const char *color_space_string = nullptr;
-		switch (create_info.imageColorSpace)
-		{
-		case VK_COLOR_SPACE_SRGB_NONLINEAR_KHR:
-			color_space_string = "VK_COLOR_SPACE_SRGB_NONLINEAR_KHR";
-			break;
-#if VK_EXT_swapchain_colorspace
-		case VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT:
-			color_space_string = "VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT";
-			break;
-		case VK_COLOR_SPACE_BT2020_LINEAR_EXT:
-			color_space_string = "VK_COLOR_SPACE_BT2020_LINEAR_EXT";
-			break;
-		case VK_COLOR_SPACE_HDR10_ST2084_EXT:
-			color_space_string = "VK_COLOR_SPACE_HDR10_ST2084_EXT";
-			break;
-		case VK_COLOR_SPACE_HDR10_HLG_EXT:
-			color_space_string = "VK_COLOR_SPACE_HDR10_HLG_EXT";
-			break;
-#endif
-		}
-
-		reshade::log::message(reshade::log::level::info, "> Dumping swap chain description:");
-		reshade::log::message(reshade::log::level::info, "  +-----------------------------------------+-----------------------------------------+");
-		reshade::log::message(reshade::log::level::info, "  | Parameter                               | Value                                   |");
-		reshade::log::message(reshade::log::level::info, "  +-----------------------------------------+-----------------------------------------+");
-		reshade::log::message(reshade::log::level::info, "  | flags                                   |"                               " %-#39x |", static_cast<unsigned int>(create_info.flags));
-		reshade::log::message(reshade::log::level::info, "  | surface                                 |"                                " %-39p |", create_info.surface);
-		reshade::log::message(reshade::log::level::info, "  | minImageCount                           |"                                " %-39u |", create_info.minImageCount);
-		if (format_string != nullptr)
-		reshade::log::message(reshade::log::level::info, "  | imageFormat                             |"                                " %-39s |", format_string);
-		else
-		reshade::log::message(reshade::log::level::info, "  | imageFormat                             |"                                " %-39d |", static_cast<int>(create_info.imageFormat));
-		if (color_space_string != nullptr)
-		reshade::log::message(reshade::log::level::info, "  | imageColorSpace                         |"                                " %-39s |", color_space_string);
-		else
-		reshade::log::message(reshade::log::level::info, "  | imageColorSpace                         |"                                " %-39d |", static_cast<int>(create_info.imageColorSpace));
-		reshade::log::message(reshade::log::level::info, "  | imageExtent                             |"            " %-19u"            " %-19u |", create_info.imageExtent.width, create_info.imageExtent.height);
-		reshade::log::message(reshade::log::level::info, "  | imageArrayLayers                        |"                                " %-39u |", create_info.imageArrayLayers);
-		reshade::log::message(reshade::log::level::info, "  | imageUsage                              |"                               " %-#39x |", static_cast<unsigned int>(create_info.imageUsage));
-		reshade::log::message(reshade::log::level::info, "  | imageSharingMode                        |"                                " %-39d |", static_cast<int>(create_info.imageSharingMode));
-		reshade::log::message(reshade::log::level::info, "  | queueFamilyIndexCount                   |"                                " %-39u |", create_info.queueFamilyIndexCount);
-		reshade::log::message(reshade::log::level::info, "  | preTransform                            |"                               " %-#39x |", static_cast<unsigned int>(create_info.preTransform));
-		reshade::log::message(reshade::log::level::info, "  | compositeAlpha                          |"                               " %-#39x |", static_cast<unsigned int>(create_info.compositeAlpha));
-		reshade::log::message(reshade::log::level::info, "  | presentMode                             |"                                " %-39d |", static_cast<int>(create_info.presentMode));
-		reshade::log::message(reshade::log::level::info, "  | clipped                                 |"                                " %-39s |", create_info.clipped ? "true" : "false");
-		reshade::log::message(reshade::log::level::info, "  | oldSwapchain                            |"                                " %-39p |", create_info.oldSwapchain);
-		reshade::log::message(reshade::log::level::info, "  +-----------------------------------------+-----------------------------------------+");
+		reshade::log::message(reshade::log::level::warning, "vkCreateSwapchainKHR failed with error code %d.", static_cast<int>(result));
+		return result;
 	}
-
-	// Look up window handle from surface
-	HWND const hwnd = g_vulkan_surfaces.at(create_info.surface);
-
-#if RESHADE_ADDON
-	reshade::api::swapchain_desc desc = {};
-	desc.back_buffer.type = reshade::api::resource_type::texture_2d;
-	desc.back_buffer.texture.width = create_info.imageExtent.width;
-	desc.back_buffer.texture.height = create_info.imageExtent.height;
-	assert(create_info.imageArrayLayers <= std::numeric_limits<uint16_t>::max());
-	desc.back_buffer.texture.depth_or_layers = static_cast<uint16_t>(create_info.imageArrayLayers);
-	desc.back_buffer.texture.levels = 1;
-	desc.back_buffer.texture.format = reshade::vulkan::convert_format(create_info.imageFormat);
-	desc.back_buffer.texture.samples = 1;
-	desc.back_buffer.heap = reshade::api::memory_heap::default_;
-	reshade::vulkan::convert_image_usage_flags_to_usage(create_info.imageUsage, desc.back_buffer.usage);
-
-	desc.back_buffer_count = create_info.minImageCount;
-	desc.present_mode = static_cast<uint32_t>(create_info.presentMode);
-	desc.present_flags = create_info.flags;
-	desc.sync_interval = create_info.presentMode == VK_PRESENT_MODE_IMMEDIATE_KHR ? 0 : UINT32_MAX;
-	desc.color_space = reshade::vulkan::convert_color_space(create_info.imageColorSpace);
-
-#if VK_EXT_full_screen_exclusive
-	// Optionally change fullscreen state
-	VkSurfaceFullScreenExclusiveInfoEXT fullscreen_info;
-	if (const auto existing_fullscreen_info = find_in_structure_chain<VkSurfaceFullScreenExclusiveInfoEXT>(
-			pCreateInfo->pNext, VK_STRUCTURE_TYPE_SURFACE_FULL_SCREEN_EXCLUSIVE_INFO_EXT))
-	{
-		fullscreen_info = *existing_fullscreen_info;
-
-		desc.fullscreen_state = existing_fullscreen_info->fullScreenExclusive == VK_FULL_SCREEN_EXCLUSIVE_ALLOWED_EXT;
-	}
-	else
-	{
-		fullscreen_info = { VK_STRUCTURE_TYPE_SURFACE_FULL_SCREEN_EXCLUSIVE_INFO_EXT, const_cast<void *>(create_info.pNext) };
-		fullscreen_info.fullScreenExclusive = VK_FULL_SCREEN_EXCLUSIVE_DEFAULT_EXT;
-	}
-#endif
-
-	if (reshade::invoke_addon_event<reshade::addon_event::create_swapchain>(reshade::api::device_api::vulkan, desc, hwnd))
-	{
-		create_info.imageFormat = reshade::vulkan::convert_format(desc.back_buffer.texture.format);
-		create_info.imageColorSpace = reshade::vulkan::convert_color_space(desc.color_space);
-		create_info.imageExtent.width = desc.back_buffer.texture.width;
-		create_info.imageExtent.height = desc.back_buffer.texture.height;
-		create_info.imageArrayLayers = desc.back_buffer.texture.depth_or_layers;
-		reshade::vulkan::convert_usage_to_image_usage_flags(desc.back_buffer.usage, create_info.imageUsage);
-
-		create_info.minImageCount = desc.back_buffer_count;
-		create_info.presentMode = static_cast<VkPresentModeKHR>(desc.present_mode);
-		create_info.flags = static_cast<uint32_t>(desc.present_flags);
-
-#if VK_EXT_full_screen_exclusive
-		if (desc.fullscreen_state)
-		{
-			if (fullscreen_info.fullScreenExclusive != VK_FULL_SCREEN_EXCLUSIVE_APPLICATION_CONTROLLED_EXT)
-			{
-				fullscreen_info.fullScreenExclusive = VK_FULL_SCREEN_EXCLUSIVE_ALLOWED_EXT;
-
-				create_info.pNext = &fullscreen_info;
-			}
-		}
-		else
-		{
-			if (fullscreen_info.fullScreenExclusive == VK_FULL_SCREEN_EXCLUSIVE_ALLOWED_EXT)
-			{
-				fullscreen_info.fullScreenExclusive = VK_FULL_SCREEN_EXCLUSIVE_APPLICATION_CONTROLLED_EXT;
-
-				create_info.pNext = &fullscreen_info;
-			}
-		}
-#endif
-
-		if (desc.sync_interval == 0)
-			create_info.presentMode = VK_PRESENT_MODE_IMMEDIATE_KHR;
-
-		// Remove format list info if format was overriden
-		if (const auto existing_format_list_info = find_in_structure_chain<VkImageFormatListCreateInfo>(
-				create_info.pNext, VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO))
-		{
-			if (std::find(existing_format_list_info->pViewFormats, existing_format_list_info->pViewFormats + existing_format_list_info->viewFormatCount, create_info.imageFormat) == (existing_format_list_info->pViewFormats + existing_format_list_info->viewFormatCount))
-				// This is evil, because potentially writing into application memory, but it is what it is
-				const_cast<VkImageFormatListCreateInfo *>(existing_format_list_info)->viewFormatCount = 0;
-		}
-	}
-#endif
 
 	// Unregister object from old swap chain so that a call to 'vkDestroySwapchainKHR' won't reset the effect runtime again
 	reshade::vulkan::object_data<VK_OBJECT_TYPE_SWAPCHAIN_KHR> *swapchain_impl = nullptr;
@@ -278,36 +290,12 @@ VkResult VKAPI_CALL vkCreateSwapchainKHR(VkDevice device, const VkSwapchainCreat
 		// Reuse the existing effect runtime if this swap chain was not created from scratch, but reset it before initializing again below
 		reshade::reset_effect_runtime(swapchain_impl);
 
-		// Get back buffer images of old swap chain
-		uint32_t num_images = 0;
-		vk.GetSwapchainImagesKHR(device, swapchain_impl->_orig, &num_images, nullptr);
-		temp_mem<VkImage, 3> swapchain_images(num_images);
-		vk.GetSwapchainImagesKHR(device, swapchain_impl->_orig, &num_images, swapchain_images.p);
-
 #if RESHADE_ADDON
 		reshade::invoke_addon_event<reshade::addon_event::destroy_swapchain>(swapchain_impl, false);
 #endif
 
-		for (uint32_t i = 0; i < num_images; ++i)
-		{
-#if RESHADE_ADDON
-			destroy_default_view(device_impl, swapchain_images[i]);
-#endif
-
-			device_impl->unregister_object<VK_OBJECT_TYPE_IMAGE>(swapchain_images[i]);
-		}
-
+		// The back buffer images could still be used after the swap chain was retired, so they are only cleaned up in 'vkDestroySwapchainKHR'
 		device_impl->unregister_object<VK_OBJECT_TYPE_SWAPCHAIN_KHR, false>(swapchain_impl->_orig);
-	}
-
-	assert(!g_in_dxgi_runtime);
-	g_in_dxgi_runtime = true;
-	const VkResult result = trampoline(device, &create_info, pAllocator, pSwapchain);
-	g_in_dxgi_runtime = false;
-	if (result < VK_SUCCESS)
-	{
-		reshade::log::message(reshade::log::level::warning, "vkCreateSwapchainKHR failed with error code %d.", static_cast<int>(result));
-		return result;
 	}
 
 	if (nullptr == swapchain_impl)
@@ -329,13 +317,13 @@ VkResult VKAPI_CALL vkCreateSwapchainKHR(VkDevice device, const VkSwapchainCreat
 	// Get back buffer images of new swap chain
 	uint32_t num_images = 0;
 	vk.GetSwapchainImagesKHR(device, swapchain_impl->_orig, &num_images, nullptr);
-	temp_mem<VkImage, 3> swapchain_images(num_images);
-	vk.GetSwapchainImagesKHR(device, swapchain_impl->_orig, &num_images, swapchain_images.p);
+	swapchain_impl->_back_buffers.resize(num_images);
+	vk.GetSwapchainImagesKHR(device, swapchain_impl->_orig, &num_images, swapchain_impl->_back_buffers.data());
 
 	// Add swap chain images to the image list
 	for (uint32_t i = 0; i < num_images; ++i)
 	{
-		reshade::vulkan::object_data<VK_OBJECT_TYPE_IMAGE> &image_data = *device_impl->register_object<VK_OBJECT_TYPE_IMAGE>(swapchain_images[i]);
+		reshade::vulkan::object_data<VK_OBJECT_TYPE_IMAGE> &image_data = *device_impl->register_object<VK_OBJECT_TYPE_IMAGE>(swapchain_impl->_back_buffers[i]);
 		image_data.create_info = { VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
 		image_data.create_info.imageType = VK_IMAGE_TYPE_2D;
 		image_data.create_info.format = create_info.imageFormat;
@@ -363,7 +351,7 @@ VkResult VKAPI_CALL vkCreateSwapchainKHR(VkDevice device, const VkSwapchainCreat
 
 	// Create default views for swap chain images (do this after the 'init_swapchain' event, so that the images are known to add-ons)
 	for (uint32_t i = 0; i < num_images; ++i)
-		create_default_view(device_impl, swapchain_images[i]);
+		create_default_view(device_impl, swapchain_impl->_back_buffers[i]);
 
 #if VK_EXT_full_screen_exclusive
 	if (fullscreen_info.fullScreenExclusive != VK_FULL_SCREEN_EXCLUSIVE_DEFAULT_EXT)
@@ -400,26 +388,26 @@ void     VKAPI_CALL vkDestroySwapchainKHR(VkDevice device, VkSwapchainKHR swapch
 	{
 		reshade::reset_effect_runtime(swapchain_impl);
 
-		// Get back buffer images of old swap chain
-		uint32_t num_images = 0;
-		vk.GetSwapchainImagesKHR(device, swapchain, &num_images, nullptr);
-		temp_mem<VkImage, 3> swapchain_images(num_images);
-		vk.GetSwapchainImagesKHR(device, swapchain, &num_images, swapchain_images.p);
-
 #if RESHADE_ADDON
 		reshade::invoke_addon_event<reshade::addon_event::destroy_swapchain>(swapchain_impl, false);
 #endif
 
-		for (uint32_t i = 0; i < num_images; ++i)
-		{
+		reshade::destroy_effect_runtime(swapchain_impl);
+	}
+
+	// Get back buffer images of old swap chain
+	uint32_t num_images = 0;
+	vk.GetSwapchainImagesKHR(device, swapchain, &num_images, nullptr);
+	temp_mem<VkImage, 3> swapchain_images(num_images);
+	vk.GetSwapchainImagesKHR(device, swapchain, &num_images, swapchain_images.p);
+
+	for (uint32_t i = 0; i < num_images; ++i)
+	{
 #if RESHADE_ADDON
-			destroy_default_view(device_impl, swapchain_images[i]);
+		destroy_default_view(device_impl, swapchain_images[i]);
 #endif
 
-			device_impl->unregister_object<VK_OBJECT_TYPE_IMAGE>(swapchain_images[i]);
-		}
-
-		reshade::destroy_effect_runtime(swapchain_impl);
+		device_impl->unregister_object<VK_OBJECT_TYPE_IMAGE>(swapchain_images[i]);
 	}
 
 	device_impl->unregister_object<VK_OBJECT_TYPE_SWAPCHAIN_KHR, false>(swapchain);
@@ -446,7 +434,9 @@ VkResult VKAPI_CALL vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPr
 
 	for (uint32_t i = 0; i < pPresentInfo->swapchainCount; ++i)
 	{
-		reshade::vulkan::object_data<VK_OBJECT_TYPE_SWAPCHAIN_KHR> *const swapchain_impl = device_impl->get_private_data_for_object<VK_OBJECT_TYPE_SWAPCHAIN_KHR>(pPresentInfo->pSwapchains[i]);
+		reshade::vulkan::object_data<VK_OBJECT_TYPE_SWAPCHAIN_KHR> *const swapchain_impl = device_impl->get_private_data_for_object<VK_OBJECT_TYPE_SWAPCHAIN_KHR, true>(pPresentInfo->pSwapchains[i]);
+		if (swapchain_impl == nullptr)
+			continue;
 
 		// 'vkAcquireNextImageKHR' may be called for the next frame before this frame was presented (e.g. in DOOM Eternal), so correct swap index must be obtained from the present info
 		swapchain_impl->_swap_index = pPresentInfo->pImageIndices[i];
@@ -457,7 +447,7 @@ VkResult VKAPI_CALL vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPr
 		temp_mem<reshade::api::rect, 16> dirty_rects;
 
 		const auto present_regions = find_in_structure_chain<VkPresentRegionsKHR>(pPresentInfo->pNext, VK_STRUCTURE_TYPE_PRESENT_REGIONS_KHR);
-		if (present_regions != nullptr)
+		if (present_regions != nullptr && present_regions->pRegions != nullptr)
 		{
 			assert(present_regions->swapchainCount == pPresentInfo->swapchainCount);
 
@@ -585,7 +575,9 @@ VkResult VKAPI_CALL vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *pPr
 	{
 		for (uint32_t i = 0; i < pPresentInfo->swapchainCount; ++i)
 		{
-			reshade::vulkan::swapchain_impl *const swapchain_impl = device_impl->get_private_data_for_object<VK_OBJECT_TYPE_SWAPCHAIN_KHR>(pPresentInfo->pSwapchains[i]);
+			reshade::vulkan::swapchain_impl *const swapchain_impl = device_impl->get_private_data_for_object<VK_OBJECT_TYPE_SWAPCHAIN_KHR, true>(pPresentInfo->pSwapchains[i]);
+			if (swapchain_impl == nullptr)
+				continue;
 
 			reshade::invoke_addon_event<reshade::addon_event::finish_present>(queue_impl, swapchain_impl);
 		}

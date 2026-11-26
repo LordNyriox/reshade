@@ -21,13 +21,11 @@ inline T *find_layer_info(const void *structure_chain, VkStructureType type, VkL
 		next = reinterpret_cast<T *>(const_cast<void *>(next->pNext));
 	return next;
 }
-template <typename T>
-inline const T *find_in_structure_chain(const void *structure_chain, VkStructureType type)
+
+inline void append_to_structure_chain(void *structure_chain, void *new_structure)
 {
-	const T *next = reinterpret_cast<const T *>(structure_chain);
-	while (next != nullptr && next->sType != type)
-		next = reinterpret_cast<const T *>(next->pNext);
-	return next;
+	static_cast<VkBaseInStructure *>(new_structure)->pNext = static_cast<VkBaseInStructure *>(structure_chain)->pNext;
+	static_cast<VkBaseInStructure *>(structure_chain)->pNext = static_cast<const VkBaseInStructure *>(new_structure);
 }
 
 inline void *const dispatch_key_from_handle(const void *dispatch_handle)
@@ -247,6 +245,9 @@ void     VKAPI_CALL vkCmdResolveImage2(VkCommandBuffer commandBuffer, const VkRe
 
 void     VKAPI_CALL vkCmdBeginRendering(VkCommandBuffer commandBuffer, const VkRenderingInfo *pRenderingInfo);
 void     VKAPI_CALL vkCmdEndRendering(VkCommandBuffer commandBuffer);
+#if VK_KHR_maintenance10
+void     VKAPI_CALL vkCmdEndRendering2KHR(VkCommandBuffer commandBuffer, const VkRenderingEndInfoKHR *pRenderingEndInfo);
+#endif
 
 void     VKAPI_CALL vkCmdBindVertexBuffers2(VkCommandBuffer commandBuffer, uint32_t firstBinding, uint32_t bindingCount, const VkBuffer *pBuffers, const VkDeviceSize *pOffsets, const VkDeviceSize *pSizes, const VkDeviceSize *pStrides);
 

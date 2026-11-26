@@ -56,7 +56,7 @@ public:
 		if (object == 0)
 			gl.GetIntegerv(reshade::opengl::get_binding_for_target(target), reinterpret_cast<GLint *>(&_object));
 
-		_desc = reshade::opengl::convert_resource_desc(target, levels, samples, internal_format, width, height, depth, swizzle_mask);
+		_desc = reshade::opengl::convert_resource_desc(_target, levels, samples, internal_format, width, height, depth, swizzle_mask);
 	}
 	explicit opengl_init_resource(const reshade::api::resource_desc &desc) :
 		_target(GL_NONE), _object(0), _desc(desc)
@@ -84,6 +84,7 @@ public:
 	{
 		const auto device = static_cast<reshade::opengl::device_impl *>(g_opengl_context->get_device());
 
+		_initial_data.data = nullptr;
 		reshade::api::subresource_data *const data = convert_mapped_subresource(format, type, pixels, _desc.texture.width, _desc.texture.height, _desc.texture.depth_or_layers);
 
 		if (reshade::invoke_addon_event<reshade::addon_event::create_resource>(device, _desc, data, reshade::api::resource_usage::general))
@@ -168,6 +169,13 @@ public:
 		if (_target != GL_NONE && ((_desc.type != reshade::api::resource_type::texture_3d && _desc.texture.depth_or_layers != 1) || _desc.texture.levels > 1))
 			return nullptr; // Currently only a single subresource data element is passed to 'create_resource' and 'init_resource' (see '_initial_data'), so cannot handle textures with multiple subresources
 
+		GLint unpack_binding = 0;
+		gl.GetIntegerv(GL_PIXEL_UNPACK_BUFFER_BINDING, &unpack_binding);
+		if (0 != unpack_binding)
+			return nullptr;
+
+		GLint alignment = 4;
+		gl.GetIntegerv(GL_UNPACK_ALIGNMENT, &alignment);
 		GLint row_length = 0;
 		gl.GetIntegerv(GL_UNPACK_ROW_LENGTH, &row_length);
 		GLint slice_height = 0;
@@ -184,20 +192,26 @@ public:
 			return nullptr;
 
 		_initial_data.row_pitch = reshade::api::format_row_pitch(pixels_format, width);
+		const uint32_t pixel_size = _initial_data.row_pitch / width;
+
+		// Rows of uncompressed data are padded to the unpack alignment
+		if (!reshade::api::format_is_block_compressed(pixels_format))
+			_initial_data.row_pitch = (_initial_data.row_pitch + alignment - 1) & ~static_cast<uint32_t>(alignment - 1);
+
 		_initial_data.slice_pitch = reshade::api::format_slice_pitch(pixels_format, _initial_data.row_pitch, height);
 
+		GLint skip_pixels = 0;
+		gl.GetIntegerv(GL_UNPACK_SKIP_PIXELS, &skip_pixels);
 		GLint skip_rows = 0;
 		gl.GetIntegerv(GL_UNPACK_SKIP_ROWS, &skip_rows);
 		GLint skip_slices = 0;
 		gl.GetIntegerv(GL_UNPACK_SKIP_IMAGES, &skip_slices);
-		GLint skip_pixels = 0;
-		gl.GetIntegerv(GL_UNPACK_SKIP_PIXELS, &skip_pixels);
 
 		_initial_data.data =
 			static_cast<uint8_t *>(const_cast<void *>(pixels)) +
+			skip_pixels * static_cast<size_t>(pixel_size) +
 			skip_rows   * static_cast<size_t>(_initial_data.row_pitch) +
-			skip_slices * static_cast<size_t>(_initial_data.slice_pitch) +
-			skip_pixels * static_cast<size_t>(_initial_data.row_pitch / width);
+			skip_slices * static_cast<size_t>(_initial_data.slice_pitch);
 
 		return &_initial_data;
 	}
@@ -205,7 +219,7 @@ public:
 	static bool is_texture_uninitialized(GLenum target)
 	{
 		GLint exists = 0;
-		gl.GetTexLevelParameteriv(target == GL_TEXTURE_CUBE_MAP || target == GL_TEXTURE_CUBE_MAP_ARRAY ? GL_TEXTURE_CUBE_MAP_POSITIVE_X : target, 0, GL_TEXTURE_WIDTH, &exists);
+		gl.GetTexLevelParameteriv(target == GL_TEXTURE_CUBE_MAP ? GL_TEXTURE_CUBE_MAP_POSITIVE_X : target, 0, GL_TEXTURE_WIDTH, &exists);
 		return 0 == exists;
 	}
 
@@ -303,10 +317,6 @@ private:
 
 static void destroy_resource_or_view(GLenum target, GLuint object)
 {
-	if (!reshade::has_addon_event<reshade::addon_event::destroy_resource>() &&
-		!reshade::has_addon_event<reshade::addon_event::destroy_resource_view>())
-		return;
-
 	const auto device = static_cast<reshade::opengl::device_impl *>(g_opengl_context->get_device());
 
 	if (target != GL_BUFFER)
@@ -326,6 +336,9 @@ static void destroy_resource_or_view(GLenum target, GLuint object)
 				reshade::invoke_addon_event<reshade::addon_event::destroy_resource_view>(device, reshade::opengl::make_resource_view_handle(face_target, object));
 			}
 		}
+
+		if (target != GL_RENDERBUFFER)
+			device->unregister_resource_view(object);
 	}
 
 	if (target != GL_TEXTURE_BUFFER)
@@ -548,13 +561,15 @@ static bool update_texture_region(GLenum target, GLuint object, GLint level, GLi
 
 static void update_current_input_layout(GLuint vertex_array_binding = 0)
 {
-	if (g_opengl_context->_current_vao_dirty &&
-		reshade::has_addon_event<reshade::addon_event::bind_pipeline>())
+	if (g_opengl_context->_current_vao_dirty)
 	{
 		// Changing the vertex array binding also changes the vertex and index buffer bindings, so force an update of those next
 		g_opengl_context->_current_vbo_dirty = true;
 		g_opengl_context->_current_ibo_dirty = true;
 		g_opengl_context->_current_vao_dirty = false;
+
+		if (!reshade::has_addon_event<reshade::addon_event::bind_pipeline>())
+			return;
 
 		if (vertex_array_binding == 0)
 			gl.GetIntegerv(GL_VERTEX_ARRAY_BINDING, reinterpret_cast<GLint *>(&vertex_array_binding));
@@ -841,7 +856,7 @@ extern "C" void APIENTRY glEnable(GLenum cap)
 		reshade::has_addon_event<reshade::addon_event::bind_pipeline_states>())
 	{
 		uint32_t value = GL_TRUE;
-		reshade::api::dynamic_state state = { reshade::api::dynamic_state::unknown };
+		reshade::api::dynamic_state state = reshade::api::dynamic_state::unknown;
 		switch (cap)
 		{
 		case GL_ALPHA_TEST:
@@ -851,6 +866,8 @@ extern "C" void APIENTRY glEnable(GLenum cap)
 			state = reshade::api::dynamic_state::blend_enable;
 			break;
 		case GL_CULL_FACE:
+			gl.GetIntegerv(GL_CULL_FACE_MODE, reinterpret_cast<GLint *>(&value));
+			value = static_cast<uint32_t>(reshade::opengl::convert_cull_mode(value));
 			state = reshade::api::dynamic_state::cull_mode;
 			break;
 		case GL_DEPTH_CLAMP:
@@ -953,7 +970,9 @@ extern "C" void APIENTRY glCullFace(GLenum mode)
 
 #if RESHADE_ADDON >= 2
 	if (g_opengl_context &&
-		reshade::has_addon_event<reshade::addon_event::bind_pipeline_states>())
+		reshade::has_addon_event<reshade::addon_event::bind_pipeline_states>() &&
+		// The cull mode has no effect until enabled (see 'glEnable')
+		gl.IsEnabled(GL_CULL_FACE))
 	{
 		const reshade::api::dynamic_state states[1] = { reshade::api::dynamic_state::cull_mode };
 		const uint32_t values[1] = { static_cast<uint32_t>(reshade::opengl::convert_cull_mode(mode)) };
@@ -1720,7 +1739,7 @@ auto APIENTRY glMapBuffer(GLenum target, GLenum access) -> void *
 
 	return result;
 }
-void APIENTRY glUnmapBuffer(GLenum target)
+auto APIENTRY glUnmapBuffer(GLenum target) -> GLboolean
 {
 #if RESHADE_ADDON >= 2
 	if (g_opengl_context &&
@@ -1738,7 +1757,7 @@ void APIENTRY glUnmapBuffer(GLenum target)
 #endif
 
 	static const auto trampoline = reshade::hooks::call(glUnmapBuffer);
-	trampoline(target);
+	return trampoline(target);
 }
 
 void APIENTRY glBindBuffer(GLenum target, GLuint buffer)
@@ -1883,20 +1902,16 @@ void APIENTRY glShaderSource(GLuint shader, GLsizei count, const GLchar *const *
 		if (count == 1)
 		{
 			combined_source_ptr = *string;
-			combined_source_length = (length != nullptr) ? *length : static_cast<GLint>(std::strlen(combined_source_ptr));
-		}
-		else if (length != nullptr)
-		{
-			for (GLsizei i = 0; i < count; ++i)
-				combined_source.append(string[i], length[i]);
-
-			combined_source_ptr = combined_source.data();
-			combined_source_length = static_cast<GLint>(combined_source.size());
+			// A negative length indicates that the string is null-terminated
+			combined_source_length = (length != nullptr && *length >= 0) ? *length : static_cast<GLint>(std::strlen(combined_source_ptr));
 		}
 		else
 		{
 			for (GLsizei i = 0; i < count; ++i)
-				combined_source.append(string[i]);
+				if (length != nullptr && length[i] >= 0)
+					combined_source.append(string[i], length[i]);
+				else
+					combined_source.append(string[i]);
 
 			combined_source_ptr = combined_source.data();
 			combined_source_length = static_cast<GLint>(combined_source.size());
@@ -2454,7 +2469,7 @@ void APIENTRY glUniformMatrix3x4fv(GLint location, GLsizei count, GLboolean tran
 }
 void APIENTRY glUniformMatrix4x3fv(GLint location, GLsizei count, GLboolean transpose, const GLfloat *value)
 {
-	static const auto trampoline = reshade::hooks::call(glUniformMatrix3x4fv);
+	static const auto trampoline = reshade::hooks::call(glUniformMatrix4x3fv);
 	trampoline(location, count, transpose, value);
 
 #if RESHADE_ADDON >= 2
@@ -2758,8 +2773,14 @@ void APIENTRY glBlitFramebuffer(GLint srcX0, GLint srcY0, GLint srcX1, GLint src
 			if ((mask & flag) != flag)
 				continue;
 
-			reshade::api::resource src = device->get_resource_from_view(device->get_framebuffer_attachment(src_fbo, flag, 0));
-			reshade::api::resource dst = device->get_resource_from_view(device->get_framebuffer_attachment(dst_fbo, flag, 0));
+			const reshade::api::resource_view src_view = device->get_framebuffer_attachment(src_fbo, flag, 0);
+			const reshade::api::resource_view dst_view = device->get_framebuffer_attachment(dst_fbo, flag, 0);
+			// Buffers that do not exist in both framebuffers are ignored
+			if (src_view == 0 || dst_view == 0)
+				continue;
+
+			const reshade::api::resource src = device->get_resource_from_view(src_view);
+			const reshade::api::resource dst = device->get_resource_from_view(dst_view);
 
 			if (device->get_resource_desc(src).texture.samples <= 1)
 			{
@@ -3086,22 +3107,22 @@ void APIENTRY glCopyBufferSubData(GLenum readTarget, GLenum writeTarget, GLintpt
 	trampoline(readTarget, writeTarget, readOffset, writeOffset, size);
 }
 
-void APIENTRY glDrawArraysInstanced(GLenum mode, GLint first, GLsizei count, GLsizei primcount)
+void APIENTRY glDrawArraysInstanced(GLenum mode, GLint first, GLsizei count, GLsizei instancecount)
 {
 #if RESHADE_ADDON
 	if (g_opengl_context)
 	{
 		update_current_primitive_topology(mode);
 
-		if (reshade::invoke_addon_event<reshade::addon_event::draw>(g_opengl_context, primcount, count, first, 0))
+		if (reshade::invoke_addon_event<reshade::addon_event::draw>(g_opengl_context, count, instancecount, first, 0))
 			return;
 	}
 #endif
 
 	static const auto trampoline = reshade::hooks::call(glDrawArraysInstanced);
-	trampoline(mode, first, count, primcount);
+	trampoline(mode, first, count, instancecount);
 }
-void APIENTRY glDrawElementsInstanced(GLenum mode, GLsizei count, GLenum type, const GLvoid *indices, GLsizei primcount)
+void APIENTRY glDrawElementsInstanced(GLenum mode, GLsizei count, GLenum type, const GLvoid *indices, GLsizei instancecount)
 {
 #if RESHADE_ADDON
 	if (g_opengl_context)
@@ -3112,13 +3133,13 @@ void APIENTRY glDrawElementsInstanced(GLenum mode, GLsizei count, GLenum type, c
 		gl.GetIntegerv(GL_ELEMENT_ARRAY_BUFFER_BINDING, &index_buffer_binding);
 		const uint32_t offset = (index_buffer_binding != 0) ? static_cast<uint32_t>(reinterpret_cast<uintptr_t>(indices) / reshade::opengl::get_index_type_size(type)) : 0;
 
-		if (reshade::invoke_addon_event<reshade::addon_event::draw_indexed>(g_opengl_context, primcount, count, offset, 0, 0))
+		if (reshade::invoke_addon_event<reshade::addon_event::draw_indexed>(g_opengl_context, count, instancecount, offset, 0, 0))
 			return;
 	}
 #endif
 
 	static const auto trampoline = reshade::hooks::call(glDrawElementsInstanced);
-	trampoline(mode, count, type, indices, primcount);
+	trampoline(mode, count, type, indices, instancecount);
 }
 #endif
 
@@ -3215,7 +3236,7 @@ void APIENTRY glDrawRangeElementsBaseVertex(GLenum mode, GLuint start, GLuint en
 	static const auto trampoline = reshade::hooks::call(glDrawRangeElementsBaseVertex);
 	trampoline(mode, start, end, count, type, indices, basevertex);
 }
-void APIENTRY glDrawElementsInstancedBaseVertex(GLenum mode, GLsizei count, GLenum type, const GLvoid *indices, GLsizei primcount, GLint basevertex)
+void APIENTRY glDrawElementsInstancedBaseVertex(GLenum mode, GLsizei count, GLenum type, const GLvoid *indices, GLsizei instancecount, GLint basevertex)
 {
 #if RESHADE_ADDON
 	if (g_opengl_context)
@@ -3226,13 +3247,13 @@ void APIENTRY glDrawElementsInstancedBaseVertex(GLenum mode, GLsizei count, GLen
 		gl.GetIntegerv(GL_ELEMENT_ARRAY_BUFFER_BINDING, &index_buffer_binding);
 		const uint32_t offset = (index_buffer_binding != 0) ? static_cast<uint32_t>(reinterpret_cast<uintptr_t>(indices) / reshade::opengl::get_index_type_size(type)) : 0;
 
-		if (reshade::invoke_addon_event<reshade::addon_event::draw_indexed>(g_opengl_context, primcount, count, offset, basevertex, 0))
+		if (reshade::invoke_addon_event<reshade::addon_event::draw_indexed>(g_opengl_context, count, instancecount, offset, basevertex, 0))
 			return;
 	}
 #endif
 
 	static const auto trampoline = reshade::hooks::call(glDrawElementsInstancedBaseVertex);
-	trampoline(mode, count, type, indices, primcount, basevertex);
+	trampoline(mode, count, type, indices, instancecount, basevertex);
 }
 void APIENTRY glMultiDrawElementsBaseVertex(GLenum mode, const GLsizei *count, GLenum type, const GLvoid *const *indices, GLsizei drawcount, const GLint *basevertex)
 {
@@ -3263,14 +3284,14 @@ void APIENTRY glMultiDrawElementsBaseVertex(GLenum mode, const GLsizei *count, G
 struct DrawArraysIndirectCommand
 {
 	GLuint count;
-	GLuint primcount;
+	GLuint instancecount;
 	GLuint first;
 	GLuint baseinstance;
 };
 struct DrawElementsIndirectCommand
 {
 	GLuint count;
-	GLuint primcount;
+	GLuint instancecount;
 	GLuint firstindex;
 	GLuint basevertex;
 	GLuint baseinstance;
@@ -3300,7 +3321,7 @@ void APIENTRY glDrawArraysIndirect(GLenum mode, const GLvoid *indirect)
 		{
 			// Redirect to non-indirect draw call so proper event is invoked
 			const auto cmd = static_cast<const DrawArraysIndirectCommand *>(indirect);
-			glDrawArraysInstancedBaseInstance(mode, cmd->first, cmd->count, cmd->primcount, cmd->baseinstance);
+			glDrawArraysInstancedBaseInstance(mode, cmd->first, cmd->count, cmd->instancecount, cmd->baseinstance);
 			return;
 		}
 	}
@@ -3338,7 +3359,7 @@ void APIENTRY glDrawElementsIndirect(GLenum mode, GLenum type, const GLvoid *ind
 				cmd->count,
 				type,
 				reinterpret_cast<const GLvoid *>(static_cast<uintptr_t>(static_cast<size_t>(cmd->firstindex) * reshade::opengl::get_index_type_size(type))),
-				cmd->primcount,
+				cmd->instancecount,
 				cmd->basevertex,
 				cmd->baseinstance);
 			return;
@@ -3500,7 +3521,8 @@ void APIENTRY glViewportIndexedfv(GLuint index, const GLfloat *v)
 	trampoline(index, v);
 
 #if RESHADE_ADDON
-	if (g_opengl_context)
+	if (g_opengl_context &&
+		reshade::has_addon_event<reshade::addon_event::bind_viewports>())
 	{
 		const reshade::api::viewport viewport_data = { v[0], v[1], v[2], v[3], 0.0f, 1.0f };
 
@@ -3580,11 +3602,15 @@ void APIENTRY glBindImageTexture(GLuint unit, GLuint texture, GLint level, GLboo
 	if (g_opengl_context &&
 		reshade::has_addon_event<reshade::addon_event::push_descriptors>())
 	{
-		GLint target = GL_TEXTURE;
-		if (gl.VERSION_4_5)
-			gl.GetTextureParameteriv(texture, GL_TEXTURE_TARGET, &target);
+		reshade::api::resource_view descriptor_data = { 0 };
+		if (texture != 0)
+		{
+			GLint target = GL_TEXTURE;
+			if (gl.VERSION_4_5)
+				gl.GetTextureParameteriv(texture, GL_TEXTURE_TARGET, &target);
 
-		const reshade::api::resource_view descriptor_data = reshade::opengl::make_resource_view_handle(target, texture);
+			descriptor_data = reshade::opengl::make_resource_view_handle(target, texture);
+		}
 
 		reshade::invoke_addon_event<reshade::addon_event::push_descriptors>(
 			g_opengl_context,
@@ -3596,22 +3622,22 @@ void APIENTRY glBindImageTexture(GLuint unit, GLuint texture, GLint level, GLboo
 #endif
 }
 
-void APIENTRY glDrawArraysInstancedBaseInstance(GLenum mode, GLint first, GLsizei count, GLsizei primcount, GLuint baseinstance)
+void APIENTRY glDrawArraysInstancedBaseInstance(GLenum mode, GLint first, GLsizei count, GLsizei instancecount, GLuint baseinstance)
 {
 #if RESHADE_ADDON
 	if (g_opengl_context)
 	{
 		update_current_primitive_topology(mode);
 
-		if (reshade::invoke_addon_event<reshade::addon_event::draw>(g_opengl_context, primcount, count, first, baseinstance))
+		if (reshade::invoke_addon_event<reshade::addon_event::draw>(g_opengl_context, count, instancecount, first, baseinstance))
 			return;
 	}
 #endif
 
 	static const auto trampoline = reshade::hooks::call(glDrawArraysInstancedBaseInstance);
-	trampoline(mode, first, count, primcount, baseinstance);
+	trampoline(mode, first, count, instancecount, baseinstance);
 }
-void APIENTRY glDrawElementsInstancedBaseInstance(GLenum mode, GLsizei count, GLenum type, const GLvoid *indices, GLsizei primcount, GLuint baseinstance)
+void APIENTRY glDrawElementsInstancedBaseInstance(GLenum mode, GLsizei count, GLenum type, const GLvoid *indices, GLsizei instancecount, GLuint baseinstance)
 {
 #if RESHADE_ADDON
 	if (g_opengl_context)
@@ -3622,15 +3648,15 @@ void APIENTRY glDrawElementsInstancedBaseInstance(GLenum mode, GLsizei count, GL
 		gl.GetIntegerv(GL_ELEMENT_ARRAY_BUFFER_BINDING, &index_buffer_binding);
 		const uint32_t offset = (index_buffer_binding != 0) ? static_cast<uint32_t>(reinterpret_cast<uintptr_t>(indices) / reshade::opengl::get_index_type_size(type)) : 0;
 
-		if (reshade::invoke_addon_event<reshade::addon_event::draw_indexed>(g_opengl_context, primcount, count, offset, 0, baseinstance))
+		if (reshade::invoke_addon_event<reshade::addon_event::draw_indexed>(g_opengl_context, count, instancecount, offset, 0, baseinstance))
 			return;
 	}
 #endif
 
 	static const auto trampoline = reshade::hooks::call(glDrawElementsInstancedBaseInstance);
-	trampoline(mode, count, type, indices, primcount, baseinstance);
+	trampoline(mode, count, type, indices, instancecount, baseinstance);
 }
-void APIENTRY glDrawElementsInstancedBaseVertexBaseInstance(GLenum mode, GLsizei count, GLenum type, const GLvoid *indices, GLsizei primcount, GLint basevertex, GLuint baseinstance)
+void APIENTRY glDrawElementsInstancedBaseVertexBaseInstance(GLenum mode, GLsizei count, GLenum type, const GLvoid *indices, GLsizei instancecount, GLint basevertex, GLuint baseinstance)
 {
 #if RESHADE_ADDON
 	if (g_opengl_context)
@@ -3641,13 +3667,13 @@ void APIENTRY glDrawElementsInstancedBaseVertexBaseInstance(GLenum mode, GLsizei
 		gl.GetIntegerv(GL_ELEMENT_ARRAY_BUFFER_BINDING, &index_buffer_binding);
 		const uint32_t offset = (index_buffer_binding != 0) ? static_cast<uint32_t>(reinterpret_cast<uintptr_t>(indices) / reshade::opengl::get_index_type_size(type)) : 0;
 
-		if (reshade::invoke_addon_event<reshade::addon_event::draw_indexed>(g_opengl_context, primcount, count, offset, basevertex, baseinstance))
+		if (reshade::invoke_addon_event<reshade::addon_event::draw_indexed>(g_opengl_context, count, instancecount, offset, basevertex, baseinstance))
 			return;
 	}
 #endif
 
 	static const auto trampoline = reshade::hooks::call(glDrawElementsInstancedBaseVertexBaseInstance);
-	trampoline(mode, count, type, indices, primcount, basevertex, baseinstance);
+	trampoline(mode, count, type, indices, instancecount, basevertex, baseinstance);
 }
 #endif
 
@@ -3775,7 +3801,7 @@ void APIENTRY glDispatchComputeIndirect(GLintptr indirect)
 			if (reshade::invoke_addon_event<reshade::addon_event::draw_or_dispatch_indirect>(
 					g_opengl_context,
 					reshade::api::indirect_command::dispatch,
-					reshade::opengl::make_resource_handle(GL_DISPATCH_INDIRECT_BUFFER, indirect_buffer_binding),
+					reshade::opengl::make_resource_handle(GL_BUFFER, indirect_buffer_binding),
 					indirect,
 					1,
 					0))
@@ -3818,7 +3844,7 @@ void APIENTRY glMultiDrawArraysIndirect(GLenum mode, const void *indirect, GLsiz
 			for (GLsizei i = 0; i < drawcount; ++i)
 			{
 				const auto cmd = reinterpret_cast<const DrawArraysIndirectCommand *>(static_cast<const uint8_t *>(indirect) + i * (stride != 0 ? stride : sizeof(DrawArraysIndirectCommand)));
-				glDrawArraysInstancedBaseInstance(mode, cmd->first, cmd->count, cmd->primcount, cmd->baseinstance);
+				glDrawArraysInstancedBaseInstance(mode, cmd->first, cmd->count, cmd->instancecount, cmd->baseinstance);
 			}
 			return;
 		}
@@ -3859,7 +3885,7 @@ void APIENTRY glMultiDrawElementsIndirect(GLenum mode, GLenum type, const void *
 					cmd->count,
 					type,
 					reinterpret_cast<const GLvoid *>(static_cast<uintptr_t>(static_cast<size_t>(cmd->firstindex) * reshade::opengl::get_index_type_size(type))),
-					cmd->primcount,
+					cmd->instancecount,
 					cmd->basevertex,
 					cmd->baseinstance);
 			}
@@ -3943,8 +3969,8 @@ void APIENTRY glBindBuffersBase(GLenum target, GLuint first, GLsizei count, cons
 			else
 			{
 				std::memset(buffer_handles.p, 0, count * sizeof(reshade::api::resource));
-				std::memset(offsets_64.p, 0, count * sizeof(reshade::api::resource));
-				std::memset(max_sizes_64.p, 0, count * sizeof(reshade::api::resource));
+				std::memset(offsets_64.p, 0, count * sizeof(uint64_t));
+				std::memset(max_sizes_64.p, 0, count * sizeof(uint64_t));
 			}
 
 			reshade::invoke_addon_event<reshade::addon_event::bind_stream_output_buffers>(g_opengl_context, first, count, buffer_handles.p, offsets_64.p, max_sizes_64.p, nullptr, nullptr);
@@ -4006,8 +4032,8 @@ void APIENTRY glBindBuffersRange(GLenum target, GLuint first, GLsizei count, con
 			else
 			{
 				std::memset(buffer_handles.p, 0, count * sizeof(reshade::api::resource));
-				std::memset(offsets_64.p, 0, count * sizeof(reshade::api::resource));
-				std::memset(max_sizes_64.p, 0, count * sizeof(reshade::api::resource));
+				std::memset(offsets_64.p, 0, count * sizeof(uint64_t));
+				std::memset(max_sizes_64.p, 0, count * sizeof(uint64_t));
 			}
 
 			reshade::invoke_addon_event<reshade::addon_event::bind_stream_output_buffers>(g_opengl_context, first, count, buffer_handles.p, offsets_64.p, max_sizes_64.p, nullptr, nullptr);
@@ -4030,12 +4056,20 @@ void APIENTRY glBindTextures(GLuint first, GLsizei count, const GLuint *textures
 		{
 			for (GLsizei i = 0; i < count; ++i)
 			{
-				GLint target = GL_TEXTURE;
-				if (gl.VERSION_4_5)
-					gl.GetTextureParameteriv(textures[i], GL_TEXTURE_TARGET, &target);
-
-				descriptor_data[i].view = reshade::opengl::make_resource_view_handle(target, textures[i]);
 				descriptor_data[i].sampler = { 0 };
+
+				if (textures[i] != 0)
+				{
+					GLint target = GL_TEXTURE;
+					if (gl.VERSION_4_5)
+						gl.GetTextureParameteriv(textures[i], GL_TEXTURE_TARGET, &target);
+
+					descriptor_data[i].view = reshade::opengl::make_resource_view_handle(target, textures[i]);
+				}
+				else
+				{
+					descriptor_data[i].view = { 0 };
+				}
 			}
 		}
 		else
@@ -4067,11 +4101,18 @@ void APIENTRY glBindImageTextures(GLuint first, GLsizei count, const GLuint *tex
 		{
 			for (GLsizei i = 0; i < count; ++i)
 			{
-				GLint target = GL_TEXTURE;
-				if (gl.VERSION_4_5)
-					gl.GetTextureParameteriv(textures[i], GL_TEXTURE_TARGET, &target);
+				if (textures[i] != 0)
+				{
+					GLint target = GL_TEXTURE;
+					if (gl.VERSION_4_5)
+						gl.GetTextureParameteriv(textures[i], GL_TEXTURE_TARGET, &target);
 
-				descriptor_data[i] = reshade::opengl::make_resource_view_handle(target, textures[i]);
+					descriptor_data[i] = reshade::opengl::make_resource_view_handle(target, textures[i]);
+				}
+				else
+				{
+					descriptor_data[i] = { 0 };
+				}
 			}
 		}
 		else
@@ -4434,7 +4475,7 @@ auto APIENTRY glMapNamedBufferRange(GLuint buffer, GLintptr offset, GLsizeiptr l
 
 	return result;
 }
-void APIENTRY glUnmapNamedBuffer(GLuint buffer)
+auto APIENTRY glUnmapNamedBuffer(GLuint buffer) -> GLboolean
 {
 #if RESHADE_ADDON >= 2
 	if (g_opengl_context &&
@@ -4449,7 +4490,7 @@ void APIENTRY glUnmapNamedBuffer(GLuint buffer)
 #endif
 
 	static const auto trampoline = reshade::hooks::call(glUnmapNamedBuffer);
-	trampoline(buffer);
+	return trampoline(buffer);
 }
 
 void APIENTRY glCopyNamedBufferSubData(GLuint readBuffer, GLuint writeBuffer, GLintptr readOffset, GLintptr writeOffset, GLsizeiptr size)
@@ -4468,6 +4509,8 @@ void APIENTRY glNamedRenderbufferStorage(GLuint renderbuffer, GLenum internalfor
 	static const auto trampoline = reshade::hooks::call(glNamedRenderbufferStorage);
 
 #if RESHADE_ADDON
+	internalformat = reshade::opengl::convert_sized_internal_format(internalformat, GL_NONE);
+
 	if (g_opengl_context)
 	{
 		opengl_init_resource resource(GL_RENDERBUFFER, renderbuffer, 1, 1, internalformat, width, height, 1);
@@ -4484,6 +4527,8 @@ void APIENTRY glNamedRenderbufferStorageMultisample(GLuint renderbuffer, GLsizei
 	static const auto trampoline = reshade::hooks::call(glNamedRenderbufferStorageMultisample);
 
 #if RESHADE_ADDON
+	internalformat = reshade::opengl::convert_sized_internal_format(internalformat, GL_NONE);
+
 	if (g_opengl_context)
 	{
 		opengl_init_resource resource(GL_RENDERBUFFER, renderbuffer, 1, samples, internalformat, width, height, 1);
@@ -4626,8 +4671,14 @@ void APIENTRY glBlitNamedFramebuffer(GLuint readFramebuffer, GLuint drawFramebuf
 			if ((mask & flag) != flag)
 				continue;
 
-			reshade::api::resource src = device->get_resource_from_view(device->get_framebuffer_attachment(readFramebuffer, flag, 0));
-			reshade::api::resource dst = device->get_resource_from_view(device->get_framebuffer_attachment(drawFramebuffer, flag, 0));
+			const reshade::api::resource_view src_view = device->get_framebuffer_attachment(readFramebuffer, flag, 0);
+			const reshade::api::resource_view dst_view = device->get_framebuffer_attachment(drawFramebuffer, flag, 0);
+			// Buffers that do not exist in both framebuffers are ignored
+			if (src_view == 0 || dst_view == 0)
+				continue;
+
+			const reshade::api::resource src = device->get_resource_from_view(src_view);
+			const reshade::api::resource dst = device->get_resource_from_view(dst_view);
 
 			if (device->get_resource_desc(src).texture.samples <= 1)
 			{
@@ -4678,13 +4729,14 @@ void APIENTRY glBindTextureUnit(GLuint unit, GLuint texture)
 	if (g_opengl_context &&
 		reshade::has_addon_event<reshade::addon_event::push_descriptors>())
 	{
-		GLint target = GL_TEXTURE;
-		gl.GetTextureParameteriv(texture, GL_TEXTURE_TARGET, &target);
+		reshade::api::sampler_with_resource_view descriptor_data = {};
+		if (texture != 0)
+		{
+			GLint target = GL_TEXTURE;
+			gl.GetTextureParameteriv(texture, GL_TEXTURE_TARGET, &target);
 
-		reshade::api::sampler_with_resource_view descriptor_data = {
-			reshade::api::sampler { 0 },
-			reshade::opengl::make_resource_view_handle(target, texture)
-		};
+			descriptor_data.view = reshade::opengl::make_resource_view_handle(target, texture);
+		}
 
 		reshade::invoke_addon_event<reshade::addon_event::push_descriptors>(
 			g_opengl_context,

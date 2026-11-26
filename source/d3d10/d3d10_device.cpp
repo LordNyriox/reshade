@@ -397,7 +397,7 @@ void    STDMETHODCALLTYPE D3D10Device::SOSetTargets(UINT NumBuffers, ID3D10Buffe
 
 	temp_mem<uint64_t, D3D10_SO_BUFFER_SLOT_COUNT> offsets_64(NumBuffers);
 	for (UINT i = 0; i < NumBuffers; ++i)
-		offsets_64[i] = pOffsets[i];
+		offsets_64[i] = (pOffsets != nullptr && pOffsets[i] != UINT_MAX) ? pOffsets[i] : UINT64_MAX; // Append by default
 
 	reshade::invoke_addon_event<reshade::addon_event::bind_stream_output_buffers>(this, 0, NumBuffers, buffer_handles, offsets_64.p, nullptr, nullptr, nullptr);
 #endif
@@ -474,7 +474,8 @@ void    STDMETHODCALLTYPE D3D10Device::CopySubresourceRegion(ID3D10Resource *pDs
 		}
 		else
 		{
-			const bool use_dst_box = DstX != 0 || DstY != 0 || DstZ != 0;
+			// Destination region is only the whole subresource if the entire source subresource is copied to the origin
+			const bool use_dst_box = pSrcBox != nullptr || DstX != 0 || DstY != 0 || DstZ != 0;
 			reshade::api::subresource_box dst_box;
 
 			if (use_dst_box)
@@ -501,27 +502,27 @@ void    STDMETHODCALLTYPE D3D10Device::CopySubresourceRegion(ID3D10Resource *pDs
 						{
 							D3D10_TEXTURE1D_DESC desc;
 							static_cast<ID3D10Texture1D *>(pSrcResource)->GetDesc(&desc);
-							dst_box.right += desc.Width;
-							dst_box.bottom += 1;
-							dst_box.back += 1;
+							dst_box.right += std::max(1u, desc.Width >> (SrcSubresource % desc.MipLevels));
+							dst_box.bottom += 1u;
+							dst_box.back += 1u;
 						}
 						break;
 					case D3D10_RESOURCE_DIMENSION_TEXTURE2D:
 						{
 							D3D10_TEXTURE2D_DESC desc;
 							static_cast<ID3D10Texture2D *>(pSrcResource)->GetDesc(&desc);
-							dst_box.right += desc.Width;
-							dst_box.bottom += desc.Height;
-							dst_box.back += 1;
+							dst_box.right += std::max(1u, desc.Width >> (SrcSubresource % desc.MipLevels));
+							dst_box.bottom += std::max(1u, desc.Height >> (SrcSubresource % desc.MipLevels));
+							dst_box.back += 1u;
 						}
 						break;
 					case D3D10_RESOURCE_DIMENSION_TEXTURE3D:
 						{
 							D3D10_TEXTURE3D_DESC desc;
 							static_cast<ID3D10Texture3D *>(pSrcResource)->GetDesc(&desc);
-							dst_box.right += desc.Width;
-							dst_box.bottom += desc.Height;
-							dst_box.back += desc.Depth;
+							dst_box.right += std::max(1u, desc.Width >> (SrcSubresource % desc.MipLevels));
+							dst_box.bottom += std::max(1u, desc.Height >> (SrcSubresource % desc.MipLevels));
+							dst_box.back += std::max(1u, desc.Depth >> (SrcSubresource % desc.MipLevels));
 						}
 						break;
 					}
@@ -764,6 +765,7 @@ void    STDMETHODCALLTYPE D3D10Device::ClearState()
 
 	reshade::invoke_addon_event<reshade::addon_event::bind_index_buffer>(this, reshade::api::resource {}, 0, 0);
 	reshade::invoke_addon_event<reshade::addon_event::bind_vertex_buffers>(this, 0, D3D10_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT, reinterpret_cast<const reshade::api::resource *>(null_objects), reinterpret_cast<const uint64_t *>(null_objects), reinterpret_cast<const uint32_t *>(null_objects));
+	reshade::invoke_addon_event<reshade::addon_event::bind_stream_output_buffers>(this, 0, D3D10_SO_BUFFER_SLOT_COUNT, reinterpret_cast<const reshade::api::resource *>(null_objects), reinterpret_cast<const uint64_t *>(null_objects), nullptr, nullptr, nullptr);
 
 	reshade::invoke_addon_event<reshade::addon_event::bind_render_targets_and_depth_stencil>(this, D3D10_SIMULTANEOUS_RENDER_TARGET_COUNT, reinterpret_cast<const reshade::api::resource_view *>(null_objects), reshade::api::resource_view {});
 
@@ -801,7 +803,7 @@ HRESULT STDMETHODCALLTYPE D3D10Device::CreateBuffer(const D3D10_BUFFER_DESC *pDe
 	{
 		reshade::d3d10::convert_resource_desc(desc, internal_desc);
 		pDesc = &internal_desc;
-		pInitialData = reinterpret_cast<const D3D10_SUBRESOURCE_DATA *>(&initial_data);
+		pInitialData = reinterpret_cast<const D3D10_SUBRESOURCE_DATA *>(initial_data.data());
 	}
 #endif
 
@@ -1163,12 +1165,15 @@ HRESULT STDMETHODCALLTYPE D3D10Device::CreateInputLayout(const D3D10_INPUT_ELEME
 	for (UINT i = 0; i < NumElements; ++i)
 		desc.push_back(reshade::d3d10::convert_input_element(pInputElementDescs[i]));
 
+	reshade::api::dynamic_state dynamic_states[] = { reshade::api::dynamic_state::input_element_stride };
+
 	reshade::api::shader_desc signature_desc = {};
 	signature_desc.code = pShaderBytecodeWithInputSignature;
 	signature_desc.code_size = BytecodeLength;
 
 	const reshade::api::pipeline_subobject subobjects[] = {
 		{ reshade::api::pipeline_subobject_type::input_layout, static_cast<uint32_t>(desc.size()), desc.data() },
+		{ reshade::api::pipeline_subobject_type::dynamic_pipeline_states, static_cast<uint32_t>(std::size(dynamic_states)), dynamic_states },
 		{ reshade::api::pipeline_subobject_type::vertex_shader, 1, &signature_desc }
 	};
 
@@ -1453,7 +1458,8 @@ HRESULT STDMETHODCALLTYPE D3D10Device::CreateBlendState(const D3D10_BLEND_DESC *
 
 		if (reshade::has_addon_event<reshade::addon_event::destroy_pipeline>() &&
 			// Do not register destruction callback for default blend state, since it is only destroyed during final device release, after 'destroy_device' event has already been called
-			std::memcmp(pBlendStateDesc, &default_blend_desc, sizeof(D3D10_BLEND_DESC)) != 0)
+			// Compare the description of the created object, since the runtime ignores some fields and returns the same object for equivalent descriptions
+			(pipeline->GetDesc(&internal_desc), std::memcmp(&internal_desc, &default_blend_desc, sizeof(D3D10_BLEND_DESC)) != 0))
 		{
 			register_destruction_callback_d3dx(pipeline, [this, pipeline]() {
 				reshade::invoke_addon_event<reshade::addon_event::destroy_pipeline>(this, to_handle(pipeline));
@@ -1521,8 +1527,9 @@ HRESULT STDMETHODCALLTYPE D3D10Device::CreateDepthStencilState(const D3D10_DEPTH
 		reshade::invoke_addon_event<reshade::addon_event::init_pipeline>(this, _global_pipeline_layout, static_cast<uint32_t>(std::size(subobjects)), subobjects, to_handle(pipeline));
 
 		if (reshade::has_addon_event<reshade::addon_event::destroy_pipeline>() &&
-			// Do not register destruction callback for default blend state, since it is only destroyed during final device release, after 'destroy_device' event has already been called
-			std::memcmp(pDepthStencilDesc, &default_depth_stencil_desc, sizeof(D3D10_DEPTH_STENCIL_DESC)) != 0)
+			// Do not register destruction callback for default depth-stencil state, since it is only destroyed during final device release, after 'destroy_device' event has already been called
+			// Compare the description of the created object, since the runtime ignores some fields and returns the same object for equivalent descriptions
+			(pipeline->GetDesc(&internal_desc), std::memcmp(&internal_desc, &default_depth_stencil_desc, sizeof(D3D10_DEPTH_STENCIL_DESC)) != 0))
 		{
 			register_destruction_callback_d3dx(pipeline, [this, pipeline]() {
 				reshade::invoke_addon_event<reshade::addon_event::destroy_pipeline>(this, to_handle(pipeline));
@@ -1593,7 +1600,7 @@ HRESULT STDMETHODCALLTYPE D3D10Device::CreateRasterizerState(const D3D10_RASTERI
 
 		if (reshade::has_addon_event<reshade::addon_event::destroy_pipeline>() &&
 			// Do not register destruction callback for default rasterizer state, since it is only destroyed during final device release, after 'destroy_device' event has already been called
-			std::memcmp(pRasterizerDesc, &default_rasterizer_desc, sizeof(D3D10_RASTERIZER_DESC)) != 0)
+			(pipeline->GetDesc(&internal_desc), std::memcmp(&internal_desc, &default_rasterizer_desc, sizeof(D3D10_RASTERIZER_DESC)) != 0))
 		{
 			register_destruction_callback_d3dx(pipeline, [this, pipeline]() {
 				reshade::invoke_addon_event<reshade::addon_event::destroy_pipeline>(this, to_handle(pipeline));
@@ -1851,7 +1858,8 @@ HRESULT STDMETHODCALLTYPE D3D10Device::CreateBlendState1(const D3D10_BLEND_DESC1
 
 		if (reshade::has_addon_event<reshade::addon_event::destroy_pipeline>() &&
 			// Do not register destruction callback for default blend state, since it is only destroyed during final device release, after 'destroy_device' event has already been called
-			std::memcmp(pBlendStateDesc, &default_blend_desc, sizeof(D3D10_BLEND_DESC1)) != 0)
+			// Compare the description of the created object, since the runtime ignores some fields and returns the same object for equivalent descriptions (other render targets are the same as the first when independent blending is disabled)
+			(pipeline->GetDesc1(&internal_desc), std::memcmp(&internal_desc, &default_blend_desc, offsetof(D3D10_BLEND_DESC1, RenderTarget[1])) != 0))
 		{
 			register_destruction_callback_d3dx(pipeline, [this, pipeline]() {
 				reshade::invoke_addon_event<reshade::addon_event::destroy_pipeline>(this, to_handle(pipeline));

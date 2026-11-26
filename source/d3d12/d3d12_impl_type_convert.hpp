@@ -67,6 +67,7 @@ namespace reshade::d3d12
 
 	void convert_resource_desc(const api::resource_desc &desc, D3D12_RESOURCE_DESC &internal_desc, D3D12_HEAP_PROPERTIES &heap_props, D3D12_HEAP_FLAGS &heap_flags);
 	void convert_resource_desc(const api::resource_desc &desc, D3D12_RESOURCE_DESC1 &internal_desc, D3D12_HEAP_PROPERTIES &heap_props, D3D12_HEAP_FLAGS &heap_flags);
+	void convert_resource_desc(const api::resource_desc &desc, D3D12_RESOURCE_DESC2 &internal_desc, D3D12_HEAP_PROPERTIES &heap_props, D3D12_HEAP_FLAGS &heap_flags);
 	inline void convert_resource_desc(const api::resource_desc &desc, D3D12_RESOURCE_DESC &internal_desc)
 	{
 		D3D12_HEAP_FLAGS dummy_heap_flags;
@@ -79,8 +80,15 @@ namespace reshade::d3d12
 		D3D12_HEAP_PROPERTIES dummy_heap_props;
 		convert_resource_desc(desc, internal_desc, dummy_heap_props, dummy_heap_flags);
 	}
+	inline void convert_resource_desc(const api::resource_desc &desc, D3D12_RESOURCE_DESC2 &internal_desc)
+	{
+		D3D12_HEAP_FLAGS dummy_heap_flags;
+		D3D12_HEAP_PROPERTIES dummy_heap_props;
+		convert_resource_desc(desc, internal_desc, dummy_heap_props, dummy_heap_flags);
+	}
 	api::resource_desc convert_resource_desc(const D3D12_RESOURCE_DESC &internal_desc, const D3D12_HEAP_PROPERTIES &heap_props = {}, D3D12_HEAP_FLAGS heap_flags = D3D12_HEAP_FLAG_NONE);
 	api::resource_desc convert_resource_desc(const D3D12_RESOURCE_DESC1 &internal_desc, const D3D12_HEAP_PROPERTIES &heap_props = {}, D3D12_HEAP_FLAGS heap_flags = D3D12_HEAP_FLAG_NONE);
+	api::resource_desc convert_resource_desc(const D3D12_RESOURCE_DESC2 &internal_desc, const D3D12_HEAP_PROPERTIES &heap_props = {}, D3D12_HEAP_FLAGS heap_flags = D3D12_HEAP_FLAG_NONE);
 
 	void convert_resource_view_desc(const api::resource_view_desc &desc, D3D12_DEPTH_STENCIL_VIEW_DESC &internal_desc);
 	void convert_resource_view_desc(const api::resource_view_desc &desc, D3D12_RENDER_TARGET_VIEW_DESC &internal_desc);
@@ -236,4 +244,13 @@ typedef D3D12_PIPELINE_STATE_STREAM<D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_SERIALIZ
 inline constexpr GUID IID_ID3D12DeviceExt = { 0x11ea7a1a, 0x0f6a, 0x49bf, { 0xb6, 0x12, 0x3e, 0x30, 0xf8, 0xe2, 0x01, 0xdd } }; // {11EA7A1A-0F6A-49BF-B612-3E30F8E201DD}
 inline constexpr GUID IID_ID3D12DeviceExt1 = { 0x099a73fd, 0x2199, 0x4f45, { 0xbf, 0x48, 0x0e, 0xb8, 0x6f, 0x6f, 0xdb, 0x65 } }; // {099A73FD-2199-4F45-BF48-0EB86F6FDB65}
 inline constexpr GUID IID_ID3D12DeviceExt2 = { 0xe859c4ac, 0xba8f, 0x41c4, { 0x8e, 0xac, 0x11, 0x37, 0xfd, 0xe6, 0x15, 0x8d } }; // {E859C4AC-BA8F-41C4-8EAC-1137FDE6158D}
+inline constexpr GUID IID_ID3D12DeviceExt3 = { 0x3aefa75c, 0xc9f3, 0x4b7f, { 0xa1, 0x80, 0x5d, 0xf6, 0x95, 0xd0, 0x83, 0xbf } }; // {3AEFA75C-C9F3-4B7F-A180-5DF695D083BF}
+inline constexpr GUID IID_ID3D12DeviceExt4 = { 0xa91b5617, 0xa06a, 0x4d6f, { 0xb4, 0x37, 0x03, 0xeb, 0xbe, 0xf9, 0x14, 0x15 } }; // {A91B5617-A06A-4D6F-B437-03EBBEF91415}
+inline constexpr GUID IID_ID3D12DeviceExt5 = { 0xe51323f6, 0x3541, 0x4ddf, { 0x89, 0x4d, 0x8a, 0x8c, 0x70, 0xe3, 0xe4, 0x27 } }; // {E51323F6-3541-4DDF-894D-8A8C70E3E427}
+inline constexpr GUID IID_ID3D12DXVKInteropDevice = { 0x39da4e09, 0xbd1c, 0x4198, { 0x9f, 0xae, 0x86, 0xbb, 0xe3, 0xbe, 0x41, 0xfd } }; // {39DA4E09-BD1C-4198-9FAE-86BBE3BE41FD}
+inline constexpr GUID IID_ID3D12DXVKInteropDevice1 = { 0x902d8115, 0x59eb, 0x4406, { 0x95, 0x18, 0xfe, 0x00, 0xf9, 0x91, 0xee, 0x65 } }; // {902D8115-59EB-4406-9518-FE00F991EE65}
+inline constexpr GUID IID_ID3D12DXVKInteropDevice2 = { 0x90ecf26e, 0xb212, 0x43f5, { 0xb6, 0x2a, 0x82, 0x5a, 0xd7, 0xb1, 0x38, 0x5e } }; // {90ECF26E-B212-43F5-B62A-825AD7B1385E}
+inline constexpr GUID IID_ID3D12DXVKInteropDevice3 = { 0x22a70184, 0xa6a4, 0x4c24, { 0xbf, 0x97, 0x7d, 0x6d, 0xf9, 0xf1, 0x2d, 0x8a } }; // {22A70184-A6A4-4C24-BF97-7D6DF9F12D8A}
 inline constexpr GUID IID_ID3D12GraphicsCommandListExt = { 0x77a86b09, 0x2bea, 0x4801, { 0xb8, 0x9a, 0x37, 0x64, 0x8e, 0x10, 0x4a, 0xf1 } }; // {77A86B09-2BEA-4801-B89A-37648E104AF1}
+inline constexpr GUID IID_ID3D12GraphicsCommandListExt1 = { 0xd53b0028, 0xafb4, 0x4b65, { 0xa4, 0xf1, 0x7b, 0x0d, 0xaa, 0xa6, 0x5b, 0x4f } }; // {D53B0028-AFB4-4B65-A4F1-7B0DAAA65B4F}
+inline constexpr GUID IID_ID3D12GraphicsCommandListExt2 = { 0x3bb8ce38, 0xabef, 0x484f, { 0x8f, 0x88, 0xd5, 0xaf, 0x90, 0xac, 0x19, 0xfb } }; // {3BB8CE38-ABEF-484F-8F88-D5AF90AC19FB}

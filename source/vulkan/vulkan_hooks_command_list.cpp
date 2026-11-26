@@ -30,8 +30,13 @@ static bool invoke_begin_render_pass_event(const reshade::vulkan::device_impl *d
 				find_in_structure_chain<VkRenderPassAttachmentBeginInfo>(
 					begin_info, VK_STRUCTURE_TYPE_RENDER_PASS_ATTACHMENT_BEGIN_INFO))
 		{
-			attachments = attachment_begin_info->pAttachments;
-			assert(subpass.num_color_attachments <= attachment_begin_info->attachmentCount);
+			// These are only provided at the beginning of the render pass, so need to remember them for subsequent subpasses
+			cmd_impl->current_imageless_attachments.assign(attachment_begin_info->pAttachments, attachment_begin_info->pAttachments + attachment_begin_info->attachmentCount);
+		}
+
+		if (!cmd_impl->current_imageless_attachments.empty())
+		{
+			attachments = cmd_impl->current_imageless_attachments.data();
 		}
 		else
 		{
@@ -245,13 +250,17 @@ VkResult VKAPI_CALL vkEndCommandBuffer(VkCommandBuffer commandBuffer)
 #if RESHADE_ADDON
 	const auto cmd_impl = device_impl->get_private_data_for_object<VK_OBJECT_TYPE_COMMAND_BUFFER>(commandBuffer);
 
-	if (cmd_impl->current_render_pass != VK_NULL_HANDLE)
+	if (cmd_impl->_is_in_render_pass)
 	{
 		reshade::invoke_addon_event<reshade::addon_event::end_render_pass>(cmd_impl);
 
 		cmd_impl->current_subpass = std::numeric_limits<uint32_t>::max();
 		cmd_impl->current_render_pass = VK_NULL_HANDLE;
 		cmd_impl->current_framebuffer = VK_NULL_HANDLE;
+		cmd_impl->current_imageless_attachments.clear();
+
+		std::memset(cmd_impl->current_color_attachments, 0, sizeof(cmd_impl->current_color_attachments));
+		cmd_impl->current_depth_stencil_attachment = VK_NULL_HANDLE;
 
 		cmd_impl->_is_in_render_pass = 0;
 	}
@@ -816,26 +825,21 @@ void VKAPI_CALL vkCmdClearColorImage(VkCommandBuffer commandBuffer, VkImage imag
 	{
 		reshade::vulkan::command_list_impl *const cmd_impl = device_impl->get_private_data_for_object<VK_OBJECT_TYPE_COMMAND_BUFFER>(commandBuffer);
 
-		VkImageMemoryBarrier transition { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
-		transition.oldLayout = imageLayout;
-		transition.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-		transition.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		transition.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		transition.image = image;
-		transition.subresourceRange.baseMipLevel = std::numeric_limits<uint32_t>::max();
-		transition.subresourceRange.baseArrayLayer = std::numeric_limits<uint32_t>::max();
-
+		temp_mem<VkImageMemoryBarrier> transitions(rangeCount);
 		for (uint32_t i = 0; i < rangeCount; ++i)
 		{
-			transition.subresourceRange.aspectMask |= pRanges[i].aspectMask;
-			transition.subresourceRange.baseMipLevel = std::min(transition.subresourceRange.baseMipLevel, pRanges[i].baseMipLevel);
-			transition.subresourceRange.levelCount = std::max(transition.subresourceRange.levelCount, pRanges[i].levelCount);
-			transition.subresourceRange.baseArrayLayer = std::min(transition.subresourceRange.baseArrayLayer, pRanges[i].baseArrayLayer);
-			transition.subresourceRange.layerCount = std::max(transition.subresourceRange.layerCount, pRanges[i].layerCount);
+			VkImageMemoryBarrier &transition = transitions[i];
+			transition = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+			transition.oldLayout = imageLayout;
+			transition.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+			transition.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			transition.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			transition.image = image;
+			transition.subresourceRange = pRanges[i];
 		}
 
 		// The 'clear_render_target_view' event assumes the resource to be in 'resource_usage::render_target' state, so need to transition here
-		device_impl->_dispatch_table.CmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 0, 0, nullptr, 0, nullptr, 1, &transition);
+		device_impl->_dispatch_table.CmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 0, 0, nullptr, 0, nullptr, rangeCount, transitions.p);
 
 		const VkImageView default_view = device_impl->get_private_data_for_object<VK_OBJECT_TYPE_IMAGE>(image)->default_view;
 		assert(default_view != VK_NULL_HANDLE); // A default view is created for every image that can potentially be cleared, see 'create_default_view' in vulkan_hooks_device.cpp
@@ -843,8 +847,9 @@ void VKAPI_CALL vkCmdClearColorImage(VkCommandBuffer commandBuffer, VkImage imag
 		const bool skip = reshade::invoke_addon_event<reshade::addon_event::clear_render_target_view>(cmd_impl, reshade::api::resource_view { (uint64_t)default_view }, pColor->float32, 0, nullptr);
 
 		// Revert back to previous state
-		std::swap(transition.oldLayout, transition.newLayout);
-		device_impl->_dispatch_table.CmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 0, 0, nullptr, 0, nullptr, 1, &transition);
+		for (uint32_t i = 0; i < rangeCount; ++i)
+			std::swap(transitions[i].oldLayout, transitions[i].newLayout);
+		device_impl->_dispatch_table.CmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 0, 0, nullptr, 0, nullptr, rangeCount, transitions.p);
 
 		if (skip)
 			return;
@@ -863,26 +868,40 @@ void VKAPI_CALL vkCmdClearDepthStencilImage(VkCommandBuffer commandBuffer, VkIma
 	{
 		reshade::vulkan::command_list_impl *const cmd_impl = device_impl->get_private_data_for_object<VK_OBJECT_TYPE_COMMAND_BUFFER>(commandBuffer);
 
-		VkImageMemoryBarrier transition { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
-		transition.oldLayout = imageLayout;
-		transition.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-		transition.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		transition.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		transition.image = image;
-		transition.subresourceRange.baseMipLevel = std::numeric_limits<uint32_t>::max();
-		transition.subresourceRange.baseArrayLayer = std::numeric_limits<uint32_t>::max();
-
+		VkImageAspectFlags aspect_mask = 0;
+		uint32_t num_transitions = 0;
+		temp_mem<VkImageMemoryBarrier> transitions(rangeCount);
 		for (uint32_t i = 0; i < rangeCount; ++i)
 		{
-			transition.subresourceRange.aspectMask |= pRanges[i].aspectMask;
-			transition.subresourceRange.baseMipLevel = std::min(transition.subresourceRange.baseMipLevel, pRanges[i].baseMipLevel);
-			transition.subresourceRange.levelCount = std::max(transition.subresourceRange.levelCount, pRanges[i].levelCount);
-			transition.subresourceRange.baseArrayLayer = std::min(transition.subresourceRange.baseArrayLayer, pRanges[i].baseArrayLayer);
-			transition.subresourceRange.layerCount = std::max(transition.subresourceRange.layerCount, pRanges[i].layerCount);
+			aspect_mask |= pRanges[i].aspectMask;
+
+			// Depth and stencil aspect of the same subresources may be specified in separate ranges, but have to be transitioned together without the 'separateDepthStencilLayouts' feature
+			const auto existing_transition = std::find_if(transitions.p, transitions.p + num_transitions,
+				[&range = pRanges[i]](const VkImageMemoryBarrier &transition) {
+					return
+						transition.subresourceRange.baseMipLevel == range.baseMipLevel &&
+						transition.subresourceRange.levelCount == range.levelCount &&
+						transition.subresourceRange.baseArrayLayer == range.baseArrayLayer &&
+						transition.subresourceRange.layerCount == range.layerCount;
+				});
+			if (existing_transition != transitions.p + num_transitions)
+			{
+				existing_transition->subresourceRange.aspectMask |= pRanges[i].aspectMask;
+				continue;
+			}
+
+			VkImageMemoryBarrier &transition = transitions[num_transitions++];
+			transition = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+			transition.oldLayout = imageLayout;
+			transition.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+			transition.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			transition.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			transition.image = image;
+			transition.subresourceRange = pRanges[i];
 		}
 
 		// The 'clear_depth_stencil_view' event assumes the resource to be in 'resource_usage::depth_stencil' state, so need to transition here
-		device_impl->_dispatch_table.CmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 0, 0, nullptr, 0, nullptr, 1, &transition);
+		device_impl->_dispatch_table.CmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 0, 0, nullptr, 0, nullptr, num_transitions, transitions.p);
 
 		const VkImageView default_view = device_impl->get_private_data_for_object<VK_OBJECT_TYPE_IMAGE>(image)->default_view;
 		assert(default_view != VK_NULL_HANDLE); // A default view is created for every image that can potentially be cleared, see 'create_default_view' in vulkan_hooks_device.cpp
@@ -890,13 +909,14 @@ void VKAPI_CALL vkCmdClearDepthStencilImage(VkCommandBuffer commandBuffer, VkIma
 		const bool skip = reshade::invoke_addon_event<reshade::addon_event::clear_depth_stencil_view>(
 			cmd_impl,
 			reshade::api::resource_view { (uint64_t)default_view },
-			transition.subresourceRange.aspectMask & VK_IMAGE_ASPECT_DEPTH_BIT ? &pDepthStencil->depth : nullptr,
-			transition.subresourceRange.aspectMask & VK_IMAGE_ASPECT_STENCIL_BIT ? reinterpret_cast<const uint8_t *>(&pDepthStencil->stencil) : nullptr,
+			aspect_mask & VK_IMAGE_ASPECT_DEPTH_BIT ? &pDepthStencil->depth : nullptr,
+			aspect_mask & VK_IMAGE_ASPECT_STENCIL_BIT ? reinterpret_cast<const uint8_t *>(&pDepthStencil->stencil) : nullptr,
 			0, nullptr);
 
 		// Revert back to previous state
-		std::swap(transition.oldLayout, transition.newLayout);
-		device_impl->_dispatch_table.CmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 0, 0, nullptr, 0, nullptr, 1, &transition);
+		for (uint32_t i = 0; i < num_transitions; ++i)
+			std::swap(transitions[i].oldLayout, transitions[i].newLayout);
+		device_impl->_dispatch_table.CmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 0, 0, nullptr, 0, nullptr, num_transitions, transitions.p);
 
 		if (skip)
 			return;
@@ -934,10 +954,10 @@ void VKAPI_CALL vkCmdClearAttachments(VkCommandBuffer commandBuffer, uint32_t at
 
 			if (clear_attachment.aspectMask & VK_IMAGE_ASPECT_COLOR_BIT)
 			{
-				assert(clear_attachment.colorAttachment < 8);
-				assert(cmd_impl->current_color_attachments[clear_attachment.colorAttachment] != VK_NULL_HANDLE);
-
-				if (reshade::invoke_addon_event<reshade::addon_event::clear_render_target_view>(
+				// Attachment may be unused or unknown at this point
+				if (clear_attachment.colorAttachment < 8 &&
+					cmd_impl->current_color_attachments[clear_attachment.colorAttachment] != VK_NULL_HANDLE &&
+					reshade::invoke_addon_event<reshade::addon_event::clear_render_target_view>(
 						cmd_impl,
 						reshade::api::resource_view { (uint64_t)cmd_impl->current_color_attachments[clear_attachment.colorAttachment] },
 						clear_attachment.clearValue.color.float32,
@@ -946,9 +966,8 @@ void VKAPI_CALL vkCmdClearAttachments(VkCommandBuffer commandBuffer, uint32_t at
 			}
 			else if (clear_attachment.aspectMask & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT))
 			{
-				assert(cmd_impl->current_depth_stencil_attachment != VK_NULL_HANDLE);
-
-				if (reshade::invoke_addon_event<reshade::addon_event::clear_depth_stencil_view>(
+				if (cmd_impl->current_depth_stencil_attachment != VK_NULL_HANDLE &&
+					reshade::invoke_addon_event<reshade::addon_event::clear_depth_stencil_view>(
 						cmd_impl,
 						reshade::api::resource_view { (uint64_t)cmd_impl->current_depth_stencil_attachment },
 						clear_attachment.aspectMask & VK_IMAGE_ASPECT_DEPTH_BIT ? &clear_attachment.clearValue.depthStencil.depth : nullptr,
@@ -1202,7 +1221,7 @@ void VKAPI_CALL vkCmdNextSubpass(VkCommandBuffer commandBuffer, VkSubpassContent
 
 	if (cmd_impl->_is_in_render_pass & 0x80)
 	{
-		// Render pass was overriden by an add-on, so there are no subpasses
+		// Render pass was overridden by an add-on, so there are no subpasses
 		return;
 	}
 
@@ -1234,6 +1253,7 @@ void VKAPI_CALL vkCmdEndRenderPass(VkCommandBuffer commandBuffer)
 	cmd_impl->current_subpass = std::numeric_limits<uint32_t>::max();
 	cmd_impl->current_render_pass = VK_NULL_HANDLE;
 	cmd_impl->current_framebuffer = VK_NULL_HANDLE;
+	cmd_impl->current_imageless_attachments.clear();
 
 	std::memset(cmd_impl->current_color_attachments, 0, sizeof(cmd_impl->current_color_attachments));
 	cmd_impl->current_depth_stencil_attachment = VK_NULL_HANDLE;
@@ -1245,7 +1265,7 @@ void VKAPI_CALL vkCmdEndRenderPass(VkCommandBuffer commandBuffer)
 	}
 	if (cmd_impl->_is_in_render_pass & 0x80)
 	{
-		// Render pass was overriden by an add-on, so need to end it the same way
+		// Render pass was overridden by an add-on, so need to end it the same way
 		cmd_impl->end_render_pass();
 		return;
 	}
@@ -1343,7 +1363,7 @@ void VKAPI_CALL vkCmdNextSubpass2(VkCommandBuffer commandBuffer, const VkSubpass
 
 	if (cmd_impl->_is_in_render_pass & 0x80)
 	{
-		// Render pass was overriden by an add-on, so there are no subpasses
+		// Render pass was overridden by an add-on, so there are no subpasses
 		return;
 	}
 
@@ -1376,6 +1396,7 @@ void VKAPI_CALL vkCmdEndRenderPass2(VkCommandBuffer commandBuffer, const VkSubpa
 	cmd_impl->current_subpass = std::numeric_limits<uint32_t>::max();
 	cmd_impl->current_render_pass = VK_NULL_HANDLE;
 	cmd_impl->current_framebuffer = VK_NULL_HANDLE;
+	cmd_impl->current_imageless_attachments.clear();
 
 	std::memset(cmd_impl->current_color_attachments, 0, sizeof(cmd_impl->current_color_attachments));
 	cmd_impl->current_depth_stencil_attachment = VK_NULL_HANDLE;
@@ -1387,7 +1408,7 @@ void VKAPI_CALL vkCmdEndRenderPass2(VkCommandBuffer commandBuffer, const VkSubpa
 	}
 	if (cmd_impl->_is_in_render_pass & 0x80)
 	{
-		// Render pass was overriden by an add-on, so need to end it the same way
+		// Render pass was overridden by an add-on, so need to end it the same way
 		cmd_impl->end_render_pass();
 		return;
 	}
@@ -1756,9 +1777,9 @@ void VKAPI_CALL vkCmdBeginRendering(VkCommandBuffer commandBuffer, const VkRende
 	for (uint32_t i = 0; i < pRenderingInfo->colorAttachmentCount && i < 8; ++i)
 		cmd_impl->current_color_attachments[i] = pRenderingInfo->pColorAttachments[i].imageView;
 
-	if (pRenderingInfo->pDepthAttachment != nullptr)
+	if (pRenderingInfo->pDepthAttachment != nullptr && pRenderingInfo->pDepthAttachment->imageView != VK_NULL_HANDLE)
 		cmd_impl->current_depth_stencil_attachment = pRenderingInfo->pDepthAttachment->imageView;
-	else if (pRenderingInfo->pStencilAttachment != nullptr)
+	else if (pRenderingInfo->pStencilAttachment != nullptr && pRenderingInfo->pStencilAttachment->imageView != VK_NULL_HANDLE)
 		cmd_impl->current_depth_stencil_attachment = pRenderingInfo->pStencilAttachment->imageView;
 
 	cmd_impl->_is_in_render_pass = 3;
@@ -1803,7 +1824,7 @@ void VKAPI_CALL vkCmdEndRendering(VkCommandBuffer commandBuffer)
 	}
 	if (cmd_impl->_is_in_render_pass & 0x80)
 	{
-		// Render pass was overriden by an add-on, so need to end it the same way
+		// Render pass was overridden by an add-on, so need to end it the same way
 		cmd_impl->end_render_pass();
 		return;
 	}
@@ -1816,6 +1837,42 @@ void VKAPI_CALL vkCmdEndRendering(VkCommandBuffer commandBuffer)
 	RESHADE_VULKAN_GET_DEVICE_DISPATCH_PTR(CmdEndRendering, device_impl);
 	trampoline(commandBuffer);
 }
+#if VK_KHR_maintenance10
+void VKAPI_CALL vkCmdEndRendering2KHR(VkCommandBuffer commandBuffer, const VkRenderingEndInfoKHR *pRenderingEndInfo)
+{
+	reshade::vulkan::device_impl *const device_impl = g_vulkan_devices.at(dispatch_key_from_handle(commandBuffer));
+
+#if RESHADE_ADDON
+	const auto cmd_impl = device_impl->get_private_data_for_object<VK_OBJECT_TYPE_COMMAND_BUFFER>(commandBuffer);
+
+	assert(cmd_impl->_is_in_render_pass == 3 || cmd_impl->_is_in_render_pass & 0x80);
+
+	const bool skip_end_render_pass = reshade::invoke_addon_event<reshade::addon_event::end_render_pass>(cmd_impl);
+
+	std::memset(cmd_impl->current_color_attachments, 0, sizeof(cmd_impl->current_color_attachments));
+	cmd_impl->current_depth_stencil_attachment = VK_NULL_HANDLE;
+
+	if (skip_end_render_pass)
+	{
+		assert(!cmd_impl->_is_in_render_pass);
+		return;
+	}
+	if (cmd_impl->_is_in_render_pass & 0x80)
+	{
+		// Render pass was overridden by an add-on, so need to end it the same way
+		cmd_impl->end_render_pass();
+		return;
+	}
+	else
+	{
+		cmd_impl->_is_in_render_pass = 0;
+	}
+#endif
+
+	RESHADE_VULKAN_GET_DEVICE_DISPATCH_PTR(CmdEndRendering2KHR, device_impl);
+	trampoline(commandBuffer, pRenderingEndInfo);
+}
+#endif
 
 void VKAPI_CALL vkCmdBindVertexBuffers2(VkCommandBuffer commandBuffer, uint32_t firstBinding, uint32_t bindingCount, const VkBuffer *pBuffers, const VkDeviceSize *pOffsets, const VkDeviceSize *pSizes, const VkDeviceSize *pStrides)
 {
@@ -1831,14 +1888,14 @@ void VKAPI_CALL vkCmdBindVertexBuffers2(VkCommandBuffer commandBuffer, uint32_t 
 	reshade::vulkan::command_list_impl *const cmd_impl = device_impl->get_private_data_for_object<VK_OBJECT_TYPE_COMMAND_BUFFER>(commandBuffer);
 
 	temp_mem<uint32_t> strides_32(bindingCount);
-	for (uint32_t i = 0; i < bindingCount; ++i)
+	for (uint32_t i = 0; i < bindingCount && pStrides != nullptr; ++i)
 	{
 		assert(pStrides[i] <= std::numeric_limits<uint32_t>::max());
 		strides_32[i] = static_cast<uint32_t>(pStrides[i]);
 	}
 
 	reshade::invoke_addon_event<reshade::addon_event::bind_vertex_buffers>(
-		cmd_impl, firstBinding, bindingCount, reinterpret_cast<const reshade::api::resource *>(pBuffers), pOffsets, strides_32.p);
+		cmd_impl, firstBinding, bindingCount, reinterpret_cast<const reshade::api::resource *>(pBuffers), pOffsets, pStrides != nullptr ? strides_32.p : nullptr);
 #endif
 }
 
@@ -1947,11 +2004,11 @@ void VKAPI_CALL vkCmdPushDescriptorSetWithTemplate(VkCommandBuffer commandBuffer
 	uint32_t max_descriptors = 0;
 	for (const VkDescriptorUpdateTemplateEntry &entry : template_data->entries)
 		max_descriptors = std::max(max_descriptors, entry.descriptorCount);
-	temp_mem<uint64_t> descriptors(max_descriptors * 2);
+	temp_mem<uint64_t> descriptors(max_descriptors * 3);
 
 	const auto shader_stages = reshade::vulkan::convert_shader_stages(template_data->bind_point);
 
-	for (uint32_t i = 0, j = 0; i < static_cast<uint32_t>(template_data->entries.size()); ++i, j = 0)
+	for (uint32_t i = 0; i < static_cast<uint32_t>(template_data->entries.size()); ++i)
 	{
 		const VkDescriptorUpdateTemplateEntry &entry = template_data->entries[i];
 
@@ -1963,38 +2020,51 @@ void VKAPI_CALL vkCmdPushDescriptorSetWithTemplate(VkCommandBuffer commandBuffer
 		update.type = reshade::vulkan::convert_descriptor_type(entry.descriptorType);
 		update.descriptors = descriptors.p;
 
-		const void *const base = static_cast<const uint8_t *>(pData) + entry.offset;
+		const uint8_t *const base = static_cast<const uint8_t *>(pData) + entry.offset;
 
 		switch (entry.descriptorType)
 		{
 		case VK_DESCRIPTOR_TYPE_SAMPLER:
-			for (uint32_t k = 0; k < entry.descriptorCount; ++k, ++j)
-				descriptors[j] = (uint64_t)static_cast<const VkDescriptorImageInfo *>(base)[k].sampler;
+			for (uint32_t k = 0; k < entry.descriptorCount; ++k)
+				descriptors[k] = (uint64_t)reinterpret_cast<const VkDescriptorImageInfo *>(base + static_cast<size_t>(k) * entry.stride)->sampler;
 			break;
 		case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
-			for (uint32_t k = 0; k < entry.descriptorCount; ++k, j += 2)
-				descriptors[j + 0] = (uint64_t)static_cast<const VkDescriptorImageInfo *>(base)[k].sampler,
-				descriptors[j + 1] = (uint64_t)static_cast<const VkDescriptorImageInfo *>(base)[k].imageView;
+			for (uint32_t k = 0; k < entry.descriptorCount; ++k)
+				descriptors[k * 2 + 0] = (uint64_t)reinterpret_cast<const VkDescriptorImageInfo *>(base + static_cast<size_t>(k) * entry.stride)->sampler,
+				descriptors[k * 2 + 1] = (uint64_t)reinterpret_cast<const VkDescriptorImageInfo *>(base + static_cast<size_t>(k) * entry.stride)->imageView;
 			break;
 		case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
 		case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
-			for (uint32_t k = 0; k < entry.descriptorCount; ++k, ++j)
-				descriptors[j] = (uint64_t)static_cast<const VkDescriptorImageInfo *>(base)[k].imageView;
+			for (uint32_t k = 0; k < entry.descriptorCount; ++k)
+				descriptors[k] = (uint64_t)reinterpret_cast<const VkDescriptorImageInfo *>(base + static_cast<size_t>(k) * entry.stride)->imageView;
 			break;
 		case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
 		case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
-			for (uint32_t k = 0; k < entry.descriptorCount; ++k, ++j)
-				descriptors[j] = (uint64_t)static_cast<const VkBufferView *>(base)[k];
+			for (uint32_t k = 0; k < entry.descriptorCount; ++k)
+				descriptors[k] = (uint64_t)*reinterpret_cast<const VkBufferView *>(base + static_cast<size_t>(k) * entry.stride);
 			break;
 		case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
 		case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
 		case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
 		case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC:
-			update.descriptors = static_cast<const VkDescriptorBufferInfo *>(base);
+			// Can reference application data directly if it is tightly packed
+			if (entry.stride == sizeof(VkDescriptorBufferInfo) || entry.descriptorCount <= 1)
+			{
+				update.descriptors = base;
+				break;
+			}
+			for (uint32_t k = 0; k < entry.descriptorCount; ++k)
+				std::memcpy(descriptors.p + k * 3, base + static_cast<size_t>(k) * entry.stride, sizeof(VkDescriptorBufferInfo));
 			break;
 #if VK_KHR_acceleration_structure
 		case VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR:
-			update.descriptors = static_cast<const VkAccelerationStructureKHR *>(base);
+			if (entry.stride == sizeof(VkAccelerationStructureKHR) || entry.descriptorCount <= 1)
+			{
+				update.descriptors = base;
+				break;
+			}
+			for (uint32_t k = 0; k < entry.descriptorCount; ++k)
+				descriptors[k] = (uint64_t)*reinterpret_cast<const VkAccelerationStructureKHR *>(base + static_cast<size_t>(k) * entry.stride);
 			break;
 #endif
 		default:
@@ -2079,8 +2149,12 @@ void VKAPI_CALL vkCmdDrawMultiEXT(VkCommandBuffer commandBuffer, uint32_t drawCo
 	reshade::vulkan::command_list_impl *const cmd_impl = device_impl->get_private_data_for_object<VK_OBJECT_TYPE_COMMAND_BUFFER>(commandBuffer);
 
 	for (uint32_t i = 0; i < drawCount; ++i)
-		if (reshade::invoke_addon_event<reshade::addon_event::draw>(cmd_impl, pVertexInfo[i].vertexCount, instanceCount, pVertexInfo[i].firstVertex, firstInstance))
+	{
+		const VkMultiDrawInfoEXT *vertex_info = reinterpret_cast<const VkMultiDrawInfoEXT *>(reinterpret_cast<const uint8_t *>(pVertexInfo) + static_cast<size_t>(i) * stride);
+
+		if (reshade::invoke_addon_event<reshade::addon_event::draw>(cmd_impl, vertex_info->vertexCount, instanceCount, vertex_info->firstVertex, firstInstance))
 			return;
+	}
 #endif
 
 	RESHADE_VULKAN_GET_DEVICE_DISPATCH_PTR(CmdDrawMultiEXT, device_impl);
@@ -2094,8 +2168,12 @@ void VKAPI_CALL vkCmdDrawMultiIndexedEXT(VkCommandBuffer commandBuffer, uint32_t
 	reshade::vulkan::command_list_impl *const cmd_impl = device_impl->get_private_data_for_object<VK_OBJECT_TYPE_COMMAND_BUFFER>(commandBuffer);
 
 	for (uint32_t i = 0; i < drawCount; ++i)
-		if (reshade::invoke_addon_event<reshade::addon_event::draw_indexed>(cmd_impl, pIndexInfo[i].indexCount, instanceCount, pIndexInfo[i].firstIndex, pVertexOffset != nullptr ? *pVertexOffset : pIndexInfo[i].vertexOffset, firstInstance))
+	{
+		const VkMultiDrawIndexedInfoEXT *index_info = reinterpret_cast<const VkMultiDrawIndexedInfoEXT *>(reinterpret_cast<const uint8_t *>(pIndexInfo) + static_cast<size_t>(i) * stride);
+
+		if (reshade::invoke_addon_event<reshade::addon_event::draw_indexed>(cmd_impl, index_info->indexCount, instanceCount, index_info->firstIndex, pVertexOffset != nullptr ? *pVertexOffset : index_info->vertexOffset, firstInstance))
 			return;
+	}
 #endif
 
 	RESHADE_VULKAN_GET_DEVICE_DISPATCH_PTR(CmdDrawMultiIndexedEXT, device_impl);

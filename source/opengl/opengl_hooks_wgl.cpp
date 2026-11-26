@@ -256,12 +256,19 @@ public:
 		}
 
 		// Ensure effect runtime references the same context as this swap chain
-		if (g_opengl_context != _last_context || _init_effect_runtime)
+		if (g_opengl_context != _last_context)
+		{
+			reshade::reset_effect_runtime(this);
+			reshade::destroy_effect_runtime(this);
+
+			_last_context = g_opengl_context;
+			_init_effect_runtime = true;
+		}
+		if (_init_effect_runtime)
 		{
 			reshade::create_effect_runtime(this, _last_context);
 			reshade::init_effect_runtime(this);
 
-			_last_context = g_opengl_context;
 			_init_effect_runtime = false;
 		}
 
@@ -722,13 +729,13 @@ HGLRC            WINAPI wglCreateContextAttribsARB(HDC hdc, HGLRC hShareContext,
 		"Redirecting wglCreateContextAttribsARB(hdc = %p, hShareContext = %p, piAttribList = %p) ...",
 		hdc, hShareContext, piAttribList);
 
-	int attribs[8 * 2] = {};
-	int i = 0, major = 1, minor = 0, flags = 0, compatibility = false;
+	std::vector<int> attribs;
+	int major = 1, minor = 0, flags = 0, compatibility = false;
 
-	for (const int *attrib = piAttribList; attrib != nullptr && *attrib != 0 && i < 5 * 2; attrib += 2)
+	for (const int *attrib = piAttribList; attrib != nullptr && *attrib != 0; attrib += 2)
 	{
-		attribs[i++] = attrib[0];
-		attribs[i++] = attrib[1];
+		attribs.push_back(attrib[0]);
+		attribs.push_back(attrib[1]);
 
 		switch (attrib[0])
 		{
@@ -762,16 +769,7 @@ HGLRC            WINAPI wglCreateContextAttribsARB(HDC hdc, HGLRC hShareContext,
 
 	if (major < 3 || (major == 3 && minor < 2))
 		compatibility = true;
-
-#ifndef NDEBUG
-	flags |= WGL_CONTEXT_DEBUG_BIT_ARB;
-#endif
-
-	// This works because the specs specifically notes that "If an attribute is specified more than once, then the last value specified is used."
-	attribs[i++] = WGL_CONTEXT_FLAGS_ARB;
-	attribs[i++] = flags;
-	attribs[i++] = WGL_CONTEXT_PROFILE_MASK_ARB;
-	attribs[i++] = compatibility ? WGL_CONTEXT_COMPATIBILITY_PROFILE_BIT_ARB : WGL_CONTEXT_CORE_PROFILE_BIT_ARB;
+	const bool legacy_context = compatibility;
 
 	reshade::log::message(reshade::log::level::info, "Requesting %s OpenGL context for version %d.%d.", compatibility ? "compatibility" : "core", major, minor);
 
@@ -779,24 +777,29 @@ HGLRC            WINAPI wglCreateContextAttribsARB(HDC hdc, HGLRC hShareContext,
 	{
 		reshade::log::message(reshade::log::level::info, "> Replacing requested version with 4.3.");
 
-		for (int k = 0; k < i; k += 2)
-		{
-			switch (attribs[k])
-			{
-			case WGL_CONTEXT_MAJOR_VERSION_ARB:
-				attribs[k + 1] = 4;
-				break;
-			case WGL_CONTEXT_MINOR_VERSION_ARB:
-				attribs[k + 1] = 3;
-				break;
-			case WGL_CONTEXT_PROFILE_MASK_ARB:
-				attribs[k + 1] = WGL_CONTEXT_COMPATIBILITY_PROFILE_BIT_ARB;
-				break;
-			}
-		}
+		major = 4;
+		minor = 3;
+		compatibility = true;
 	}
 
-	const HGLRC hglrc = reshade::hooks::call(wglCreateContextAttribsARB)(hdc, hShareContext, reinterpret_cast<const int *>(attribs));
+#ifndef NDEBUG
+	flags |= WGL_CONTEXT_DEBUG_BIT_ARB;
+#endif
+
+	// This works because the specs specifically notes that "If an attribute is specified more than once, then the last value specified is used."
+	attribs.push_back(WGL_CONTEXT_MAJOR_VERSION_ARB);
+	attribs.push_back(major);
+	attribs.push_back(WGL_CONTEXT_MINOR_VERSION_ARB);
+	attribs.push_back(minor);
+	attribs.push_back(WGL_CONTEXT_FLAGS_ARB);
+	attribs.push_back(flags);
+	attribs.push_back(WGL_CONTEXT_PROFILE_MASK_ARB);
+	attribs.push_back(compatibility ? WGL_CONTEXT_COMPATIBILITY_PROFILE_BIT_ARB : WGL_CONTEXT_CORE_PROFILE_BIT_ARB);
+
+	// Terminate attribute list
+	attribs.push_back(0);
+
+	const HGLRC hglrc = reshade::hooks::call(wglCreateContextAttribsARB)(hdc, hShareContext, attribs.data());
 	if (hglrc == nullptr)
 	{
 		reshade::log::message(reshade::log::level::warning, "wglCreateContextAttribsARB failed with error code %lu.", GetLastError() & 0xFFFF);
@@ -805,21 +808,14 @@ HGLRC            WINAPI wglCreateContextAttribsARB(HDC hdc, HGLRC hShareContext,
 
 	{ const std::unique_lock<std::shared_mutex> lock(s_global_mutex);
 
-		if (compatibility)
+		if (legacy_context)
 			s_legacy_contexts.emplace(hglrc);
 
+		// Find the root share context
+		for (auto it = s_shared_contexts.find(hShareContext); it != s_shared_contexts.end() && it->second != nullptr; it = s_shared_contexts.find(hShareContext))
+			hShareContext = it->second;
+
 		s_shared_contexts[hglrc] = hShareContext;
-
-		if (hShareContext != nullptr)
-		{
-			// Find the root share context
-			auto it = s_shared_contexts.find(hShareContext);
-
-			while (it != s_shared_contexts.end() && it->second != nullptr)
-			{
-				it = s_shared_contexts.find(s_shared_contexts.at(hglrc) = it->second);
-			}
-		}
 	}
 
 #if RESHADE_VERBOSE_LOG
@@ -874,7 +870,7 @@ extern "C" BOOL  WINAPI wglDeleteContext(HGLRC hglrc)
 			const HDC prev_hdc = wglGetCurrentDC();
 			const HGLRC prev_hglrc = wglGetCurrentContext();
 
-			if (prev_hglrc != hglrc && !(prev_hglrc != nullptr && prev_hglrc == s_shared_contexts.at(hglrc)))
+			if (prev_hglrc != hglrc && !(prev_hglrc != nullptr && prev_hglrc == s_shared_contexts[hglrc]))
 			{
 				// In case the original was destroyed already, create a dummy window to get a valid context
 				dummy_window_handle = CreateWindow(TEXT("STATIC"), nullptr, 0, 0, 0, 0, 0, nullptr, nullptr, nullptr, 0);
@@ -917,15 +913,15 @@ extern "C" BOOL  WINAPI wglDeleteContext(HGLRC hglrc)
 				{
 					delete device;
 				}
-
-				// Restore previous device and render context
-				if (prev_hglrc != hglrc)
-					reshade::hooks::call(wglMakeCurrent)(prev_hdc, prev_hglrc);
 			}
 			else
 			{
 				reshade::log::message(reshade::log::level::warning, "Unable to make context current (error code %lu)! Leaking resources ...", GetLastError() & 0xFFFF);
 			}
+
+			// Restore previous device and render context
+			if (prev_hglrc != hglrc)
+				reshade::hooks::call(wglMakeCurrent)(prev_hdc, prev_hglrc);
 
 			if (dummy_window_handle != nullptr)
 				DestroyWindow(dummy_window_handle);
@@ -976,6 +972,10 @@ extern "C" BOOL  WINAPI wglShareLists(HGLRC hglrc1, HGLRC hglrc2)
 
 	{ const std::unique_lock<std::shared_mutex> lock(s_global_mutex);
 
+		// Find the root share context
+		for (auto it = s_shared_contexts.find(hglrc1); it != s_shared_contexts.end() && it->second != nullptr; it = s_shared_contexts.find(hglrc1))
+			hglrc1 = it->second;
+
 		s_shared_contexts[hglrc2] = hglrc1;
 	}
 
@@ -988,8 +988,9 @@ extern "C" BOOL  WINAPI wglMakeCurrent(HDC hdc, HGLRC hglrc)
 	reshade::log::message(reshade::log::level::info, "Redirecting wglMakeCurrent(hdc = %p, hglrc = %p) ...", hdc, hglrc);
 #endif
 
-	HGLRC shared_hglrc = hglrc;
+	const HDC prev_hdc = wglGetCurrentDC();
 	const HGLRC prev_hglrc = wglGetCurrentContext();
+	HGLRC shared_hglrc = hglrc;
 
 	static const auto trampoline = reshade::hooks::call(wglMakeCurrent);
 	if (!trampoline(hdc, hglrc))
@@ -1000,7 +1001,7 @@ extern "C" BOOL  WINAPI wglMakeCurrent(HDC hdc, HGLRC hglrc)
 		return FALSE;
 	}
 
-	if (hglrc == prev_hglrc)
+	if (hdc == prev_hdc && hglrc == prev_hglrc)
 	{
 		// Nothing has changed, so there is nothing more to do
 		return TRUE;
@@ -1032,7 +1033,7 @@ extern "C" BOOL  WINAPI wglMakeCurrent(HDC hdc, HGLRC hglrc)
 		g_opengl_context = it->second;
 
 		assert(g_opengl_context != nullptr);
-		device = static_cast<wgl_device *>(g_opengl_context);
+		device = static_cast<wgl_device *>(g_opengl_context->get_device());
 	}
 	else
 	{

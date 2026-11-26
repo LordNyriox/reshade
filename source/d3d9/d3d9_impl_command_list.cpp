@@ -332,7 +332,7 @@ void reshade::d3d9::device_impl::push_descriptors(api::shader_stage stages, api:
 			// See https://docs.microsoft.com/windows/win32/direct3d9/vertex-textures-in-vs-3-0
 			first += D3DVERTEXTEXTURESAMPLER0;
 			if ((first + count) > (D3DVERTEXTEXTURESAMPLER3 + 1)) // The vertex engine only contains four texture sampler stages
-				count = (D3DVERTEXTEXTURESAMPLER3 + 1) - first;
+				count = (first <= D3DVERTEXTEXTURESAMPLER3) ? (D3DVERTEXTEXTURESAMPLER3 + 1) - first : 0;
 		}
 
 		switch (update.type)
@@ -457,9 +457,10 @@ void reshade::d3d9::device_impl::draw_indexed(uint32_t index_count, uint32_t ins
 		if (SUCCEEDED(_orig->GetStreamSource(0, &stream, &offset, &stride)) && stream != nullptr)
 		{
 			D3DVERTEXBUFFER_DESC desc;
-			if (SUCCEEDED(stream->GetDesc(&desc)))
+			if (SUCCEEDED(stream->GetDesc(&desc)) && stride != 0 && offset < desc.Size)
 			{
-				vertex_count = ((desc.Size - offset) / stride) - vertex_offset;
+				vertex_count = (desc.Size - offset) / stride;
+				vertex_count = (vertex_offset < 0 || static_cast<UINT>(vertex_offset) < vertex_count) ? vertex_count - vertex_offset : 0;
 			}
 		}
 	}
@@ -493,7 +494,7 @@ void reshade::d3d9::device_impl::copy_resource(api::resource src, api::resource 
 	}
 	else
 	{
-		for (uint32_t layer = 0; layer < desc.texture.depth_or_layers; ++layer)
+		for (uint32_t layer = 0; layer < (desc.type == api::resource_type::texture_3d ? 1u : static_cast<uint32_t>(desc.texture.depth_or_layers)); ++layer)
 		{
 			for (uint32_t level = 0; level < desc.texture.levels; ++level)
 			{
@@ -721,12 +722,18 @@ void reshade::d3d9::device_impl::copy_texture_region(api::resource src, uint32_t
 
 			if (src_box != nullptr)
 			{
-				vertices[0][3] = static_cast<float>(src_box->left) * 2.0f / dst_desc.Width;
-				vertices[0][4] = static_cast<float>(src_box->top) * 2.0f / dst_desc.Height;
-				vertices[1][3] = static_cast<float>(src_box->right) * 2.0f / dst_desc.Width;
-				vertices[1][4] = static_cast<float>(src_box->top) * 2.0f / dst_desc.Height;
-				vertices[2][3] = static_cast<float>(src_box->left) * 2.0f / dst_desc.Width;
-				vertices[2][4] = static_cast<float>(src_box->bottom) * 2.0f / dst_desc.Height;
+				const float tu_left = static_cast<float>(src_box->left) / src_desc.Width;
+				const float tv_top = static_cast<float>(src_box->top) / src_desc.Height;
+				const float tu_right = static_cast<float>(src_box->right) / src_desc.Width;
+				const float tv_bottom = static_cast<float>(src_box->bottom) / src_desc.Height;
+
+				// Triangle is twice as large as the target, so need to extrapolate coordinates accordingly
+				vertices[0][3] = tu_left;
+				vertices[0][4] = tv_top;
+				vertices[1][3] = 2.0f * tu_right - tu_left;
+				vertices[1][4] = tv_top;
+				vertices[2][3] = tu_left;
+				vertices[2][4] = 2.0f * tv_bottom - tv_top;
 			}
 
 			_orig->DrawPrimitiveUP(D3DPT_TRIANGLELIST, 1, vertices, sizeof(vertices[0]));
@@ -737,7 +744,7 @@ void reshade::d3d9::device_impl::copy_texture_region(api::resource src, uint32_t
 			_orig->SetFVF(D3DFVF_XYZ | D3DFVF_TEX1 | D3DFVF_TEXCOORDSIZE3(0));
 
 			float vertices[4][6] = {
-				// x      y      z      tx     ty     tz
+				// x      y      z      tu     tv     tw
 				{ -1.0f,  1.0f,  0.0f,  0.0f,  0.0f,  0.0f },
 				{  1.0f,  1.0f,  0.0f,  1.0f,  0.0f,  0.0f },
 				{ -1.0f, -1.0f,  0.0f,  0.0f,  1.0f,  0.0f },
@@ -752,14 +759,19 @@ void reshade::d3d9::device_impl::copy_texture_region(api::resource src, uint32_t
 
 			if (src_box != nullptr)
 			{
-				vertices[0][3] = static_cast<float>(src_box->left) / dst_desc.Width;
-				vertices[0][4] = static_cast<float>(src_box->top) / dst_desc.Height;
-				vertices[1][3] = static_cast<float>(src_box->right) / dst_desc.Width;
-				vertices[1][4] = static_cast<float>(src_box->top) / dst_desc.Height;
-				vertices[2][3] = static_cast<float>(src_box->left) / dst_desc.Width;
-				vertices[2][4] = static_cast<float>(src_box->bottom) / dst_desc.Height;
-				vertices[3][3] = static_cast<float>(src_box->right) / dst_desc.Width;
-				vertices[3][4] = static_cast<float>(src_box->bottom) / dst_desc.Height;
+				const float tu_left = static_cast<float>(src_box->left) / src_desc.Width;
+				const float tv_top = static_cast<float>(src_box->top) / src_desc.Height;
+				const float tu_right = static_cast<float>(src_box->right) / src_desc.Width;
+				const float tv_bottom = static_cast<float>(src_box->bottom) / src_desc.Height;
+
+				vertices[0][3] = tu_left;
+				vertices[0][4] = tv_top;
+				vertices[1][3] = tu_right;
+				vertices[1][4] = tv_top;
+				vertices[2][3] = tu_left;
+				vertices[2][4] = tv_bottom;
+				vertices[3][3] = tu_right;
+				vertices[3][4] = tv_bottom;
 			}
 
 			for (int i = 0; i < 4; ++i)
@@ -835,7 +847,7 @@ void reshade::d3d9::device_impl::clear_render_target_view(api::resource_view rtv
 
 #if 1
 	for (size_t i = 0; i < std::max(rect_count, 1u); ++i)
-		_orig->ColorFill(reinterpret_cast<IDirect3DSurface9 *>(rtv.handle & ~1ull), reinterpret_cast<const RECT *>(rects + i * 4), D3DCOLOR_COLORVALUE(color[0], color[1], color[2], color[3]));
+		_orig->ColorFill(reinterpret_cast<IDirect3DSurface9 *>(rtv.handle & ~1ull), reinterpret_cast<const RECT *>(rects + i), D3DCOLOR_COLORVALUE(color[0], color[1], color[2], color[3]));
 #else
 	assert(rect_count == 0); // Clearing rectangles is not supported
 
